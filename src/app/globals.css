@@ -5,6 +5,27 @@
 
 @custom-variant dark (&:is(.dark *));
 
+
+
+
+
+
+
+:root {
+  --pnb-red: #8B0000;
+  --pnb-gold: #FFD700;
+  --pnb-dark: #0f172a;
+}
+
+body {
+  background: linear-gradient(135deg, #0f172a, #1e293b);
+  color: white;
+}
+
+
+
+
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -453,3 +474,10 @@
 nextjs-portal {
   display: none !important;
 }
+
+
+
+
+
+
+

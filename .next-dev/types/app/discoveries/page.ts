@@ -1,4 +1,4 @@
-// File: /Users/maasir/Projects/quantwarden-ui/src/app/discoveries/page.tsx
+// File: D:\PNB\quantwarden-ui\src\app\discoveries\page.tsx
 import * as entry from '../../../../src/app/discoveries/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

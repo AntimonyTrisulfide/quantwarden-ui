@@ -1,7 +1,6 @@
 {
-  "/crypto-posture/page": "app/crypto-posture/page.js",
-  "/discoveries/page": "app/discoveries/page.js",
+  "/favicon.ico/route": "app/favicon.ico/route.js",
   "/asset-inventory/page": "app/asset-inventory/page.js",
-  "/cbom/explorer/algorithms/page": "app/cbom/explorer/algorithms/page.js",
-  "/cbom/explorer/certificates/page": "app/cbom/explorer/certificates/page.js"
+  "/cyber-rating/page": "app/cyber-rating/page.js",
+  "/page": "app/page.js"
 }

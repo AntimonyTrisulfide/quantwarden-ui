@@ -11,65 +11,30 @@
       "static/css/app/layout.css",
       "static/chunks/app/layout.js"
     ],
-    "/cbom/page": [
+    "/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/cbom/page.js"
+      "static/chunks/app/page.js"
+    ],
+    "/asset-inventory/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/asset-inventory/page.js"
     ],
     "/discoveries/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/discoveries/page.js"
     ],
-    "/page": [
+    "/cyber-rating/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/page.js"
+      "static/chunks/app/cyber-rating/page.js"
     ],
     "/reporting/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/reporting/page.js"
-    ],
-    "/crypto-posture/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/crypto-posture/page.js"
-    ],
-    "/cbom/explorer/layout": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/cbom/explorer/layout.js"
-    ],
-    "/cbom/explorer/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/cbom/explorer/page.js"
-    ],
-    "/cbom/explorer/algorithms/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/cbom/explorer/algorithms/page.js"
-    ],
-    "/cbom/explorer/keys/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/cbom/explorer/keys/page.js"
-    ],
-    "/cbom/explorer/protocols/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/cbom/explorer/protocols/page.js"
-    ],
-    "/cbom/explorer/certificates/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/cbom/explorer/certificates/page.js"
-    ],
-    "/asset-inventory/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/asset-inventory/page.js"
     ]
   }
 }
