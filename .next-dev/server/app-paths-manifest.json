@@ -1,7 +1,7 @@
 {
-  "/crypto-posture/page": "app/crypto-posture/page.js",
-  "/discoveries/page": "app/discoveries/page.js",
-  "/asset-inventory/page": "app/asset-inventory/page.js",
-  "/cbom/explorer/algorithms/page": "app/cbom/explorer/algorithms/page.js",
-  "/cbom/explorer/certificates/page": "app/cbom/explorer/certificates/page.js"
+  "/cbom/page": "app/cbom/page.js",
+  "/cbom/explorer/keys/page": "app/cbom/explorer/keys/page.js",
+  "/cbom/explorer/certificates/page": "app/cbom/explorer/certificates/page.js",
+  "/cbom/explorer/protocols/page": "app/cbom/explorer/protocols/page.js",
+  "/cbom/explorer/algorithms/page": "app/cbom/explorer/algorithms/page.js"
 }
