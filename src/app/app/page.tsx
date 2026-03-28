@@ -20,7 +20,7 @@ import {
   Plus,
   Users,
   ArrowRight,
-  Search,
+
   Crown,
   Globe,
   Lock,
@@ -284,7 +284,7 @@ export default function AppDashboard() {
                 onClick={() => { setShowJoinModal(true); setError(""); }}
                 className="flex items-center gap-1.5 px-4 py-2 text-sm font-bold text-[#8B0000] border border-[#8B0000]/20 rounded-xl hover:bg-[#8B0000]/5 transition-all"
               >
-                <Search className="w-4 h-4" /> Join
+                <Hash className="w-4 h-4" /> Join
               </button>
               <button
                 onClick={handleOpenCreateModal}
@@ -331,7 +331,7 @@ export default function AppDashboard() {
             {orgList.map((org) => (
               <div
                 key={org.id}
-                className="group relative bg-white border border-amber-500/20 rounded-2xl p-6 shadow-sm hover:shadow-xl hover:border-[#8B0000]/25 hover:-translate-y-1 transition-all cursor-pointer hover:bg-linear-to-br hover:from-white hover:to-[#fdf1df]"
+                className="group relative bg-white border border-amber-500/20 rounded-2xl shadow-sm hover:shadow-xl hover:border-amber-400/60 hover:-translate-y-1 transition-all hover:bg-gradient-to-br hover:from-[#fffef5] hover:to-[#f9bc1b]/50 flex flex-col"
               >
                 {/* 3-dot menu */}
                 <div className="absolute top-4 right-4 z-10" ref={openMenuId === org.id ? menuRef : null}>
@@ -341,7 +341,7 @@ export default function AppDashboard() {
                       e.stopPropagation();
                       setOpenMenuId(openMenuId === org.id ? null : org.id);
                     }}
-                    className="w-8 h-8 rounded-lg flex items-center justify-center text-[#8a5d33] opacity-0 group-hover:opacity-100 hover:bg-[#8B0000]/10 hover:text-[#8B0000] transition-all"
+                    className="w-8 h-8 rounded-lg flex items-center justify-center text-[#8a5d33] opacity-0 group-hover:opacity-100 hover:bg-[#8B0000]/10 hover:text-[#8B0000] transition-all cursor-pointer"
                   >
                     <MoreHorizontal className="w-4 h-4" />
                   </button>
@@ -354,7 +354,7 @@ export default function AppDashboard() {
                           e.stopPropagation();
                           handleCopyCode(org.slug, org.id);
                         }}
-                        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-[#3d200a] hover:bg-[#fdf1df] transition-colors"
+                        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-[#3d200a] hover:bg-[#fdf1df] transition-colors cursor-pointer"
                       >
                         {copiedId === org.id ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-[#8a5d33]" />}
                         <span className="font-medium">{copiedId === org.id ? "Copied!" : "Copy Code"}</span>
@@ -365,7 +365,7 @@ export default function AppDashboard() {
                           e.stopPropagation();
                           handleShareLink(org.slug);
                         }}
-                        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-[#3d200a] hover:bg-[#fdf1df] transition-colors"
+                        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-[#3d200a] hover:bg-[#fdf1df] transition-colors cursor-pointer"
                       >
                         <Share2 className="w-4 h-4 text-[#8a5d33]" />
                         <span className="font-medium">Share Link</span>
@@ -381,7 +381,7 @@ export default function AppDashboard() {
                               setDeleteConfirmName("");
                               setDeleteError("");
                             }}
-                            className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors"
+                            className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
                           >
                             <Trash2 className="w-4 h-4" />
                             <span className="font-medium">Delete Organization</span>
@@ -393,59 +393,61 @@ export default function AppDashboard() {
                 </div>
 
                 {/* Card content - clickable */}
-                <Link href={`/app/${org.slug}`} className="block">
-                  <div className="flex items-start gap-4 mb-4">
-                    {org.logo ? (
-                      <img src={org.logo} alt={org.name} className="w-12 h-12 rounded-full object-cover shadow-sm" />
-                    ) : (
-                      <div className="w-12 h-12 bg-[#8B0000]/10 rounded-full flex items-center justify-center shrink-0">
-                        <Building2 className="w-6 h-6 text-[#8B0000]" />
-                      </div>
-                    )}
-                    <div className="overflow-hidden flex-1 pr-8">
-                      <h3 className="text-base font-bold text-[#3d200a] truncate group-hover:text-[#8B0000] transition-colors">
-                        {org.name}
-                      </h3>
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleCopyCode(org.slug, org.id);
-                        }}
-                        className="group/code flex items-center gap-1.5 mt-0.5 text-xs text-[#8a5d33] font-mono tracking-wider hover:text-[#8B0000] transition-colors text-left"
-                        title="Copy code"
-                      >
-                        <span className="truncate">{org.slug}</span>
-                        {copiedId === org.id ? (
-                          <Check className="w-3 h-3 text-emerald-600 shrink-0" />
-                        ) : (
-                          <Copy className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 mb-5">
-                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[#8a5d33] bg-[#fdf1df] px-2.5 py-1 rounded-lg">
-                      <Crown className="w-3 h-3" />
-                      {org.role === "owner" ? "Owner" : org.role === "admin" ? "Admin" : "Member"}
-                    </span>
-                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[#8a5d33]">
-                      {org.isPublic ? (
-                        <><Globe className="w-3 h-3" /> Public</>
+                <Link href={`/app/${org.slug}`} className="block p-6 flex-1 flex flex-col justify-between h-full">
+                  <div>
+                    <div className="flex items-start gap-4 mb-4">
+                      {org.logo ? (
+                        <img src={org.logo} alt={org.name} className="w-14 h-14 rounded-full object-cover shadow-sm bg-white" />
                       ) : (
-                        <><Lock className="w-3 h-3" /> Private</>
+                        <div className="w-14 h-14 bg-[#8B0000]/10 rounded-full flex items-center justify-center shrink-0">
+                          <Building2 className="w-7 h-7 text-[#8B0000]" />
+                        </div>
                       )}
-                    </span>
+                      <div className="overflow-hidden flex-1 pr-8">
+                        <h3 className="text-xl font-extrabold text-[#3d200a] truncate group-hover:text-[#8B0000] transition-colors leading-tight">
+                          {org.name}
+                        </h3>
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleCopyCode(org.slug, org.id);
+                          }}
+                          className="group/code flex items-center gap-1.5 mt-1 text-sm text-[#8a5d33] font-mono tracking-wider hover:text-[#8B0000] transition-colors text-left cursor-pointer"
+                          title="Copy code"
+                        >
+                          <span className="truncate">{org.slug}</span>
+                          {copiedId === org.id ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 mb-6">
+                      <span className="inline-flex items-center gap-1.5 text-sm font-bold text-[#8a5d33] bg-[#fdf1df] px-3 py-1.5 rounded-lg">
+                        <Crown className="w-3.5 h-3.5 text-[#8B0000]" />
+                        {org.role.charAt(0).toUpperCase() + org.role.slice(1)}
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 text-sm font-bold text-[#8a5d33]">
+                        {org.isPublic ? (
+                          <><Globe className="w-3.5 h-3.5" /> Public</>
+                        ) : (
+                          <><Lock className="w-3.5 h-3.5" /> Private</>
+                        )}
+                      </span>
+                    </div>
                   </div>
 
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 text-xs text-[#8a5d33]">
-                      <Users className="w-3.5 h-3.5" />
-                      <span className="font-medium">{org.memberCount} {org.memberCount === 1 ? "member" : "members"}</span>
+                  <div className="flex items-center justify-between mt-auto">
+                    <div className="flex items-center gap-1.5 text-sm font-bold text-[#8a5d33]">
+                      <Users className="w-4 h-4" />
+                      <span>{org.memberCount} {org.memberCount === 1 ? "member" : "members"}</span>
                     </div>
-                    <span className="inline-flex items-center gap-1 text-xs font-bold text-[#8B0000] uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity">
-                      Open <ArrowRight className="w-3.5 h-3.5" />
+                    <span className="inline-flex items-center gap-1 text-sm font-bold text-[#8B0000] uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0">
+                      Open <ArrowRight className="w-4 h-4" />
                     </span>
                   </div>
                 </Link>

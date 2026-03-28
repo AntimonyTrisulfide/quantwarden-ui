@@ -1,9 +1,11 @@
 "use client";
 
+import { Suspense } from "react";
 import { useSession, signOut } from "@/lib/auth-client";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { Shield, LogOut, User, Mail, ChevronDown, Loader2 } from "lucide-react";
+import NavigationProgress from "@/components/ui/navigation-progress";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -45,6 +47,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-[#fffcf5] font-sans text-slate-900 selection:bg-[#8B0000] selection:text-white">
+      <Suspense fallback={null}>
+        <NavigationProgress />
+      </Suspense>
       {/* Top Navigation Bar */}
       <nav className="sticky top-0 z-50 w-full bg-white/80 backdrop-blur-lg border-b border-amber-500/15 shadow-sm">
         <div className="max-w-[1440px] mx-auto px-6 sm:px-8 h-16 flex items-center justify-between">

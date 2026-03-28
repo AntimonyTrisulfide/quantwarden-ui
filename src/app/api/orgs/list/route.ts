@@ -34,10 +34,11 @@ export async function GET(req: NextRequest) {
       `SELECT 
         o.id, o.name, o.slug, o.logo, o."createdAt", o.metadata,
         o."isPublic", o.discoverable,
-        m.role,
+        COALESCE(r.name, m.role) as role,
         (SELECT COUNT(*)::int FROM "member" m2 WHERE m2."organizationId" = o.id) as "memberCount"
       FROM "organization" o
       INNER JOIN "member" m ON m."organizationId" = o.id AND m."userId" = $1
+      LEFT JOIN "role" r ON r.id::text = m.role AND r."organizationId" = o.id
       ORDER BY o."createdAt" DESC`,
       userId
     );
