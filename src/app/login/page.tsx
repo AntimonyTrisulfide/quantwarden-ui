@@ -1,14 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import Link from "next/link";
 import { signIn, signOut, useSession } from "@/lib/auth-client";
 import { Loader2, Shield, LogOut, LayoutDashboard } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import OtpInput from "@/components/ui/otp-input";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const callbackUrl = searchParams.get("callbackUrl") || "/app";
   const { data: sessionData, isPending: sessionLoading } = useSession();
   const [email, setEmail] = useState("");
   const [emailTouched, setEmailTouched] = useState(false);
@@ -22,7 +24,7 @@ export default function LoginPage() {
   const handleGoogleSignIn = async () => {
     setLoadingGoogle(true);
     try {
-      await signIn.social({ provider: "google", callbackURL: "/app" });
+      await signIn.social({ provider: "google", callbackURL: callbackUrl });
     } catch (e) {
       console.error(e);
       setLoadingGoogle(false);
@@ -35,7 +37,7 @@ export default function LoginPage() {
     setLoadingMagic(true);
     try {
       // This triggers the magicLink flow which now also generates an OTP
-      await signIn.magicLink({ email, callbackURL: "/app" });
+      await signIn.magicLink({ email, callbackURL: callbackUrl });
       setOtpScreen(true);
     } catch (error) {
       console.error(error);
@@ -45,7 +47,7 @@ export default function LoginPage() {
   };
 
   const handleResend = async () => {
-    await signIn.magicLink({ email, callbackURL: "/app" });
+    await signIn.magicLink({ email, callbackURL: callbackUrl });
   };
 
   const handleOtpVerified = (verifyUrl: string) => {
@@ -112,13 +114,22 @@ export default function LoginPage() {
                 <Shield className="w-8 h-8 text-[#8B0000]" />
               </div>
               <h2 className="text-2xl font-black text-[#3d200a] mb-2 tracking-tight">Active Session</h2>
-              <p className="text-[#8a5d33] mb-8 font-medium">
-                You are currently logged in as <br/>
+              <p className="text-[#8a5d33] mb-4 font-medium">
+                You are already logged in as <br/>
                 <strong className="text-[#8B0000] text-lg block mt-1">{sessionData.user.name ?? sessionData.user.email}</strong>
               </p>
+
+              {callbackUrl.includes("/invites/") && (
+                <div className="mb-8 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 font-medium">
+                  Proceed to view your organization invitation.
+                </div>
+              )}
+              {(!callbackUrl || !callbackUrl.includes("/invites/")) && (
+                <div className="mb-8" />
+              )}
               <div className="space-y-3">
                 <Link
-                  href="/app"
+                  href={callbackUrl}
                   className="w-full flex items-center justify-center gap-2 bg-[#8B0000] text-white py-3.5 px-6 rounded-xl font-bold shadow-md shadow-[#8B0000]/20 hover:-translate-y-0.5 hover:bg-[#730000] transition-all"
                 >
                   <LayoutDashboard className="w-5 h-5" /> Open App
@@ -217,5 +228,17 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-[#fffcf5]">
+        <Loader2 className="w-10 h-10 animate-spin text-[#8B0000]" />
+      </div>
+    }>
+      <LoginForm />
+    </Suspense>
   );
 }

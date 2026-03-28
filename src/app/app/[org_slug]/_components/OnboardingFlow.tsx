@@ -1,0 +1,890 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { Loader2, ArrowRight, ArrowLeft, Globe, Lock, Search, EyeOff, Plus, Trash2, Mail, Check, Copy, Info, ChevronDown, Send, XCircle, CheckCircle2, Clock } from "lucide-react";
+import { useRouter } from "next/navigation";
+
+// Custom Dropdown Component for fully color-coded options
+function RoleDropdown({ 
+  currentRoleId, 
+  roles, 
+  onChange, 
+  getRoleColorOptions 
+}: { 
+  currentRoleId: string, 
+  roles: any[], 
+  onChange: (id: string) => void,
+  getRoleColorOptions: (id: string, isOption?: boolean) => string 
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = () => setIsOpen(false);
+    if (isOpen) {
+      // Small timeout prevents immediate closure on click
+      setTimeout(() => document.addEventListener("click", handleClickOutside), 10);
+    }
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, [isOpen]);
+
+  const currentRole = roles.find(r => r.id === currentRoleId);
+
+  return (
+    <div className="relative text-left" onClick={(e) => e.stopPropagation()}>
+      <button 
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className={`flex items-center justify-between gap-3 text-xs font-bold px-3 py-1.5 rounded-lg border outline-none cursor-pointer transition-colors w-[140px] ${getRoleColorOptions(currentRoleId)}`}
+      >
+        <span className="truncate">{currentRole?.name || "Select Role"}</span>
+        <ChevronDown className="w-3.5 h-3.5 shrink-0" />
+      </button>
+
+      {isOpen && (
+        <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-amber-500/20 rounded-xl shadow-xl z-50 overflow-hidden flex flex-col p-1.5 animate-in fade-in zoom-in-95 duration-100">
+          <div className="px-2 pb-1.5 mb-1 text-[10px] font-bold text-[#8a5d33]/50 uppercase tracking-wider border-b border-amber-500/10">Select Role</div>
+          <div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto pr-1">
+            {roles.map(r => (
+              <button
+                key={r.id}
+                type="button"
+                onClick={() => {
+                  onChange(r.id);
+                  setIsOpen(false);
+                }}
+                className={`text-left text-xs font-bold px-3 py-2.5 rounded-lg transition-colors border ${getRoleColorOptions(r.id, true)}`}
+              >
+                {r.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function OnboardingFlow({ org }: { org: any }) {
+  const [step, setStep] = useState(1);
+  const [maxUnlockedStep, setMaxUnlockedStep] = useState(1);
+  const router = useRouter();
+
+  // Load from local storage securely on client side mount
+  useEffect(() => {
+    try {
+      const savedStep = localStorage.getItem(`onboard_step_${org.id}`);
+      const savedMax = localStorage.getItem(`onboard_max_${org.id}`);
+      if (savedStep) setStep(parseInt(savedStep, 10));
+      if (savedMax) setMaxUnlockedStep(parseInt(savedMax, 10));
+    } catch(e) {}
+  }, [org.id]);
+
+  const navigateToStep = (newStep: number) => {
+    setStep(newStep);
+    try {
+      localStorage.setItem(`onboard_step_${org.id}`, newStep.toString());
+      if (newStep > maxUnlockedStep) {
+        setMaxUnlockedStep(newStep);
+        localStorage.setItem(`onboard_max_${org.id}`, newStep.toString());
+      }
+    } catch(e) {}
+  };
+
+  // Step 1 State
+  const [visibility, setVisibility] = useState<"hidden" | "public">(org.discoverable ? "public" : "hidden");
+  const [approval, setApproval] = useState<"private" | "public">(org.isPublic ? "public" : "private");
+
+  // Step 2 State
+  const [domains, setDomains] = useState<string[]>(org.domains || []);
+  const [currentDomain, setCurrentDomain] = useState("");
+
+  // Step 4 State
+  const [invites, setInvites] = useState<{ email: string, roleId: string }[]>([]);
+  const [sentInvites, setSentInvites] = useState<any[]>([]);
+  const [currentInvite, setCurrentInvite] = useState("");
+  const [isSendingInvites, setIsSendingInvites] = useState(false);
+
+  useEffect(() => {
+    if (step === 4) {
+      const fetchSent = async () => {
+        try {
+          const res = await fetch(`/api/orgs/invite?orgId=${org.id}`);
+          if (res.ok) {
+            setSentInvites(await res.json());
+          }
+        } catch(e) {}
+      };
+      fetchSent();
+    }
+  }, [step, org.id]);
+
+  // Step 3 State
+  const defaultRoles = [
+    { id: "admin", name: "Administrator", permissions: { team: true, scan: true, asset: true }, isSystem: true, locked: ["team", "scan", "asset"] },
+    { id: "analyst", name: "Analyst", permissions: { team: false, scan: false, asset: false }, isSystem: true, locked: ["team"] },
+    { id: "auditor", name: "Auditor", permissions: { team: false, scan: false, asset: false }, isSystem: true, locked: ["team", "scan", "asset"] }
+  ];
+
+  const initialRoles = defaultRoles.map(def => {
+    const existing = org.roles.find((r: any) => r.name === def.name);
+    return existing ? { ...def, id: existing.id, permissions: existing.permissions } : def;
+  });
+
+  org.roles.forEach((r: any) => {
+    if (!defaultRoles.find(def => def.name === r.name)) {
+      initialRoles.push({ id: r.id, name: r.name, permissions: r.permissions, isSystem: false, locked: [] });
+    }
+  });
+
+  const [roles, setRoles] = useState<any[]>(initialRoles);
+
+  // Global State
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+
+  // Background Auto-Save
+  const autoSave = async (data: any) => {
+    setAutoSaveStatus("saving");
+    const { visibility: _v, approval: _a, domains: _d, ...restData } = data; // For potential use directly, but we map specific objects.
+
+    try {
+      await fetch("/api/orgs/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId: org.id,
+          ...data
+        })
+      });
+      setAutoSaveStatus("saved");
+      setTimeout(() => setAutoSaveStatus("idle"), 2500);
+    } catch (e) {
+      console.error("Auto-save failed", e);
+      setAutoSaveStatus("idle");
+    }
+  };
+
+  const handleVisibilityChange = (val: "hidden" | "public") => {
+    setVisibility(val);
+    autoSave({ discoverable: val === "public" });
+  };
+
+  const handleApprovalChange = (val: "private" | "public") => {
+    setApproval(val);
+    autoSave({ isPublic: val === "public" });
+  };
+
+  const handleAddDomain = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentDomain.trim()) return;
+    
+    const splitDomains = currentDomain
+      .split(/[\s,]+/)
+      .map(d => d.trim().toLowerCase())
+      .filter(d => d.length > 0);
+
+    if (splitDomains.length === 0) return;
+
+    // Filter out domains already in the list to prevent duplicates
+    const newDomainsToAdd = splitDomains.filter(d => !domains.includes(d));
+    
+    if (newDomainsToAdd.length > 0) {
+      const newDomains = [...domains, ...newDomainsToAdd];
+      setDomains(newDomains);
+      autoSave({ domains: newDomains });
+    }
+    setCurrentDomain("");
+  };
+
+  const handleRemoveDomain = (domain: string) => {
+    const newDomains = domains.filter(d => d !== domain);
+    setDomains(newDomains);
+    autoSave({ domains: newDomains });
+  };
+
+  const handleTogglePermission = (roleId: string, perm: string) => {
+    const newRoles = roles.map(r => {
+      if (r.id === roleId && !r.locked.includes(perm)) {
+        return { ...r, permissions: { ...r.permissions, [perm]: !r.permissions[perm] } };
+      }
+      return r;
+    });
+    setRoles(newRoles);
+    autoSave({ roles: newRoles });
+  };
+
+  const handleAddCustomRole = () => {
+    const newRoles = [
+      ...roles, 
+      { id: crypto.randomUUID(), name: "Custom Role", permissions: { team: false, scan: false, asset: false }, isSystem: false, locked: [] }
+    ];
+    setRoles(newRoles);
+    autoSave({ roles: newRoles });
+  };
+
+  const handleUpdateRoleName = (roleId: string, newName: string) => {
+    const newRoles = roles.map(r => r.id === roleId ? { ...r, name: newName } : r);
+    setRoles(newRoles);
+    autoSave({ roles: newRoles });
+  };
+
+  const handleRemoveRole = (roleId: string) => {
+    const newRoles = roles.filter(r => r.id !== roleId);
+    setRoles(newRoles);
+    autoSave({ roles: newRoles });
+  };
+
+  const handleAddInvite = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentInvite.trim()) return;
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const splitEmails = currentInvite
+      .split(/[\s,]+/)
+      .map(e => e.trim().toLowerCase())
+      .filter(e => e.length > 0 && emailRegex.test(e));
+
+    if (splitEmails.length === 0) return;
+
+    // Pick a sensible default role (e.g. Analyst or Member or the first role available)
+    const defaultRoleId = roles.find(r => r.name.toLowerCase() === "analyst")?.id || roles[0]?.id || "";
+
+    const newInvitesToAdd = splitEmails
+      .filter(email => !invites.some(inv => inv.email === email))
+      .map(email => ({ email, roleId: defaultRoleId }));
+
+    if (newInvitesToAdd.length > 0) {
+      setInvites([...invites, ...newInvitesToAdd]);
+    }
+    setCurrentInvite("");
+  };
+
+  const handleRemoveInvite = (email: string) => {
+    setInvites(invites.filter(inv => inv.email !== email));
+  };
+
+  const handleUpdateInviteRole = (email: string, roleId: string) => {
+    setInvites(invites.map(inv => inv.email === email ? { ...inv, roleId } : inv));
+  };
+
+  const getRoleColorOptions = (roleId: string, isOption: boolean = false) => {
+    const role = roles.find(r => r.id === roleId);
+    // Base styles
+    if (!role) return "bg-amber-50 text-amber-800 border-amber-300";
+    
+    // In dropdown lists, we might want slightly different structural padding, but the colors run the same
+    if (role.name.toLowerCase().includes("admin")) {
+      return `bg-red-50 text-red-700 border-red-200 hover:bg-red-100 ${!isOption && 'border-red-300 bg-red-100'}`;
+    } else if (role.name.toLowerCase().includes("auditor")) {
+      return `bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 ${!isOption && 'border-emerald-300 bg-emerald-100'}`;
+    } else if (role.name.toLowerCase().includes("analyst")) {
+      return `bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100 ${!isOption && 'border-orange-300 bg-orange-100'}`;
+    } else {
+      return `bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100 ${!isOption && 'border-purple-300 bg-purple-100'}`;
+    }
+  };
+
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(org.slug);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleSendInvites = async () => {
+    if (invites.length === 0) return;
+    setIsSendingInvites(true);
+    
+    try {
+      setError("");
+      const res = await fetch("/api/orgs/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId: org.id,
+          invites: invites.map(inv => ({ email: inv.email, roleId: inv.roleId }))
+        })
+      });
+
+      if (res.ok) {
+        const fetchRes = await fetch(`/api/orgs/invite?orgId=${org.id}`);
+        if (fetchRes.ok) setSentInvites(await fetchRes.json());
+        setInvites([]);
+      } else {
+        const errData = await res.json();
+        setError(errData.error || "Failed to send invitations.");
+      }
+    } catch(e) {
+      setError("An unexpected error occurred while sending invites.");
+    }
+    
+    setIsSendingInvites(false);
+  };
+
+  const handleDeleteSentInvite = async (inviteId: string) => {
+    try {
+      const res = await fetch(`/api/orgs/invite/${inviteId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setSentInvites(sentInvites.filter(inv => inv.id !== inviteId));
+      }
+    } catch(e) {
+      console.error(e);
+    }
+  };
+
+  const handleComplete = async () => {
+    setSaving(true);
+    setError("");
+
+    try {
+      await autoSave({ discoverable: visibility === "public", isPublic: approval === "public", setupComplete: true });
+      localStorage.removeItem(`onboard_step_${org.id}`);
+      localStorage.removeItem(`onboard_max_${org.id}`);
+      router.push(`/app/${org.slug}`);
+    } catch (e) {
+      console.error(e);
+      setError("Something went wrong finalizing setup.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto py-10">
+      {/* Progress Header */}
+      <div className="mb-10 text-center">
+        <h1 className="text-3xl font-black text-[#3d200a] mb-2 tracking-tight">Organization Setup</h1>
+        <p className="text-[#8a5d33] font-medium">Configure {org.name} to get started</p>
+        
+        <div className="flex items-center justify-center gap-4 mt-8">
+          {[1, 2, 3, 4].map((num) => (
+            <div key={num} className="flex items-center gap-4">
+              <button
+                type="button"
+                onClick={() => {
+                  if (num <= maxUnlockedStep) navigateToStep(num);
+                }}
+                disabled={num > maxUnlockedStep}
+                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm transition-all focus:outline-none ${
+                  step === num
+                    ? "bg-[#8B0000] text-white shadow-md shadow-[#8B0000]/20 scale-110"
+                    : step > num
+                    ? "bg-amber-500/20 text-[#8B0000] border border-amber-500/30"
+                    : "bg-white border border-amber-500/20 text-[#8a5d33]/50"
+                } ${num <= maxUnlockedStep ? "cursor-pointer hover:ring-2 hover:ring-amber-500/40" : "cursor-not-allowed opacity-60"}`}
+              >
+                {step > num ? <Check className="w-4 h-4" /> : num}
+              </button>
+              {num < 4 && (
+                <div className={`h-1 w-8 sm:w-12 rounded-full transition-all ${step > num ? "bg-amber-500/30" : "bg-amber-500/10"}`} />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-white border border-amber-500/20 rounded-2xl shadow-xl shadow-amber-500/5 overflow-hidden">
+        {error && (
+          <div className="bg-red-50 border-b border-red-200 text-red-600 px-6 py-3 text-sm font-medium flex items-center gap-2">
+            {error}
+          </div>
+        )}
+
+        <div className="p-8 md:p-10">
+          {/* STEP 1: Privacy Settings */}
+          {step === 1 && (
+            <div className="space-y-8 animate-in fade-in slide-in-from-right-4">
+              <div className="space-y-4">
+                <h2 className="text-xl font-bold text-[#3d200a]">Search Visibility</h2>
+                <div className="grid grid-cols-1 md:grid-grid-cols-2 gap-4">
+                  <button
+                    onClick={() => handleVisibilityChange("hidden")}
+                    className={`flex flex-col items-start p-5 rounded-xl border-2 transition-all text-left ${
+                      visibility === "hidden"
+                        ? "border-[#8B0000] bg-[#8B0000]/5 shadow-sm"
+                        : "border-amber-500/20 hover:border-amber-500/40 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-2 font-bold text-[#3d200a]">
+                      <EyeOff className={`w-5 h-5 ${visibility === "hidden" ? "text-[#8B0000]" : "text-[#8a5d33]"}`} /> Hidden (Default)
+                    </div>
+                    <p className="text-sm text-[#8a5d33] font-medium leading-relaxed">
+                      Your organization won't appear in search results. Members must know the exact join code.
+                    </p>
+                  </button>
+
+                  <button
+                    onClick={() => handleVisibilityChange("public")}
+                    className={`flex flex-col items-start p-5 rounded-xl border-2 transition-all text-left ${
+                      visibility === "public"
+                        ? "border-[#8B0000] bg-[#8B0000]/5 shadow-sm"
+                        : "border-amber-500/20 hover:border-amber-500/40 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-2 font-bold text-[#3d200a]">
+                      <Search className={`w-5 h-5 ${visibility === "public" ? "text-[#8B0000]" : "text-[#8a5d33]"}`} /> Public
+                    </div>
+                    <p className="text-sm text-[#8a5d33] font-medium leading-relaxed">
+                      Anyone can find your organization by searching its name.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-4 pt-4 border-t border-amber-500/10">
+                <h2 className="text-xl font-bold text-[#3d200a]">Joining Approval</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <button
+                    onClick={() => handleApprovalChange("private")}
+                    className={`flex flex-col items-start p-5 rounded-xl border-2 transition-all text-left ${
+                      approval === "private"
+                        ? "border-[#8B0000] bg-[#8B0000]/5 shadow-sm"
+                        : "border-amber-500/20 hover:border-amber-500/40 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-2 font-bold text-[#3d200a]">
+                      <Lock className={`w-5 h-5 ${approval === "private" ? "text-[#8B0000]" : "text-[#8a5d33]"}`} /> Private
+                    </div>
+                    <p className="text-sm text-[#8a5d33] font-medium leading-relaxed">
+                      Owners and admins must manually approve any request to join.
+                    </p>
+                  </button>
+
+                  <button
+                    onClick={() => handleApprovalChange("public")}
+                    className={`flex flex-col items-start p-5 rounded-xl border-2 transition-all text-left ${
+                      approval === "public"
+                        ? "border-[#8B0000] bg-[#8B0000]/5 shadow-sm"
+                        : "border-amber-500/20 hover:border-amber-500/40 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-2 font-bold text-[#3d200a]">
+                      <Globe className={`w-5 h-5 ${approval === "public" ? "text-[#8B0000]" : "text-[#8a5d33]"}`} /> Public
+                    </div>
+                    <p className="text-sm text-[#8a5d33] font-medium leading-relaxed">
+                      Anyone who knows the joining code can instantly join as a member without approval.
+                    </p>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* STEP 2: Root Domains */}
+          {step === 2 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
+              <div>
+                <h2 className="text-xl font-bold text-[#3d200a] mb-2">Root Domains</h2>
+                <p className="text-[#8a5d33] font-medium leading-relaxed">
+                  Enter your root domain(s) manually. QuantWarden will automatically discover and catalogue your public sub-domains and assets.
+                </p>
+              </div>
+
+              <form onSubmit={handleAddDomain} className="flex gap-3">
+                <input
+                  type="text"
+                  value={currentDomain}
+                  onChange={(e) => setCurrentDomain(e.target.value)}
+                  placeholder="e.g. quantwarden.com, example.com"
+                  className="flex-1 bg-white border border-amber-500/30 rounded-xl px-4 py-3 text-[#3d200a] placeholder:text-[#8a5d33]/50 focus:outline-none focus:ring-2 focus:ring-[#8B0000]/50 transition-all shadow-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={!currentDomain.trim()}
+                  className="flex items-center gap-2 px-6 py-3 bg-[#8B0000] text-white rounded-xl font-bold text-sm hover:bg-[#730000] transition-all shadow-sm disabled:opacity-50"
+                >
+                  <Plus className="w-4 h-4" /> Add
+                </button>
+              </form>
+              <p className="text-xs text-[#8a5d33]/70 font-medium px-1">
+                You can add multiple domains at once. Separate them with spaces, commas, or newlines.
+              </p>
+
+              {domains.length > 0 ? (
+                <div className="border border-amber-500/20 rounded-xl overflow-hidden bg-white shadow-sm">
+                  <table className="w-full text-left font-medium">
+                    <thead className="bg-[#fdf1df]">
+                      <tr>
+                        <th className="py-3 px-4 text-[#8a5d33] text-xs uppercase tracking-wider">Domain</th>
+                        <th className="py-3 px-4 text-right text-[#8a5d33] text-xs uppercase tracking-wider">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-amber-500/10">
+                      {domains.map((d) => (
+                        <tr key={d} className="hover:bg-amber-500/5 transition-colors">
+                          <td className="py-3 px-4 text-[#3d200a]">{d}</td>
+                          <td className="py-3 px-4 text-right">
+                            <button
+                              onClick={() => handleRemoveDomain(d)}
+                              className="text-red-500 hover:text-red-700 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="bg-amber-50/50 border-2 border-dashed border-amber-500/20 rounded-xl p-8 text-center">
+                  <Globe className="w-8 h-8 text-amber-500/50 mx-auto mb-3" />
+                  <p className="text-[#8a5d33] font-medium text-sm">No domains added yet.</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* STEP 3: Roles and Permissions */}
+          {step === 3 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
+              <div>
+                <h2 className="text-xl font-bold text-[#3d200a] mb-2">Roles & Permissions</h2>
+                <p className="text-[#8a5d33] font-medium leading-relaxed">
+                  Configure default and custom role permissions for members within your organization. 
+                </p>
+              </div>
+
+              <div className="border border-amber-500/20 rounded-xl overflow-hidden bg-white shadow-sm overflow-x-auto">
+                <table className="w-full text-left font-medium min-w-[500px]">
+                  <thead className="bg-[#fdf1df]">
+                    <tr>
+                      <th className="py-3 px-4 text-[#8a5d33] text-xs uppercase tracking-wider">Role Name</th>
+                      <th className="py-3 px-4 text-center text-[#8a5d33] text-xs uppercase tracking-wider relative group">
+                        <div className="flex items-center justify-center gap-1.5 cursor-help">
+                          Team Mgt
+                          <Info className="w-3.5 h-3.5 text-amber-500/70" />
+                        </div>
+                        <div className="absolute hidden group-hover:block top-full mt-1 left-1/2 -translate-x-1/2 w-48 bg-[#3d200a] text-white text-[10px] leading-relaxed normal-case p-3 rounded-lg shadow-xl z-50 font-medium text-left">
+                          Approve/deny join requests, assign user roles, add/remove users.
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-[#3d200a]"></div>
+                        </div>
+                      </th>
+                      <th className="py-3 px-4 text-center text-[#8a5d33] text-xs uppercase tracking-wider relative group">
+                        <div className="flex items-center justify-center gap-1.5 cursor-help">
+                          Scan Config
+                          <Info className="w-3.5 h-3.5 text-amber-500/70" />
+                        </div>
+                        <div className="absolute hidden group-hover:block top-full mt-1 left-1/2 -translate-x-1/2 w-48 bg-[#3d200a] text-white text-[10px] leading-relaxed normal-case p-3 rounded-lg shadow-xl z-50 font-medium text-left">
+                          Schedule Normal and Advanced Scans.
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-[#3d200a]"></div>
+                        </div>
+                      </th>
+                      <th className="py-3 px-4 text-center text-[#8a5d33] text-xs uppercase tracking-wider relative group">
+                        <div className="flex items-center justify-center gap-1.5 cursor-help">
+                          Asset Mgt
+                          <Info className="w-3.5 h-3.5 text-amber-500/70" />
+                        </div>
+                        <div className="absolute hidden group-hover:block top-full mt-1 left-1/2 -translate-x-1/2 w-52 bg-[#3d200a] text-white text-[10px] leading-relaxed normal-case p-3 rounded-lg shadow-xl z-50 font-medium text-left">
+                          Add or remove domains/subdomains, verify ownership of domains/subdomains.
+                          <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-4 border-transparent border-b-[#3d200a]"></div>
+                        </div>
+                      </th>
+                      <th className="py-3 px-4 text-right text-[#8a5d33] text-xs uppercase tracking-wider w-12"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-amber-500/10">
+                    {roles.map((r) => (
+                      <tr key={r.id} className="hover:bg-amber-500/5 transition-colors">
+                        <td className="py-3 px-4">
+                          {r.isSystem ? (
+                            <span className="text-[#3d200a] font-bold">{r.name}</span>
+                          ) : (
+                            <input 
+                              type="text" 
+                              value={r.name} 
+                              onChange={(e) => handleUpdateRoleName(r.id, e.target.value)}
+                              className="bg-white border border-amber-500/30 rounded-lg px-2 py-1 text-[#3d200a] font-bold outline-none focus:ring-2 ring-[#8B0000]/40 w-full max-w-[150px]"
+                            />
+                          )}
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <input 
+                            type="checkbox" 
+                            checked={r.permissions.team} 
+                            disabled={r.locked.includes("team")}
+                            onChange={() => handleTogglePermission(r.id, "team")}
+                            className="w-4 h-4 accent-[#8B0000] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                          />
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <input 
+                            type="checkbox" 
+                            checked={r.permissions.scan} 
+                            disabled={r.locked.includes("scan")}
+                            onChange={() => handleTogglePermission(r.id, "scan")}
+                            className="w-4 h-4 accent-[#8B0000] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                          />
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <input 
+                            type="checkbox" 
+                            checked={r.permissions.asset} 
+                            disabled={r.locked.includes("asset")}
+                            onChange={() => handleTogglePermission(r.id, "asset")}
+                            className="w-4 h-4 accent-[#8B0000] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                          />
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          {!r.isSystem && (
+                            <button
+                              onClick={() => handleRemoveRole(r.id)}
+                              className="text-red-500 hover:text-red-700 p-1.5 rounded-lg hover:bg-red-50 transition-colors ml-2"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              
+              <button
+                onClick={handleAddCustomRole}
+                className="flex items-center gap-2 px-4 py-2.5 bg-white border-2 border-dashed border-amber-500/40 text-[#8a5d33] rounded-xl font-bold text-sm hover:bg-amber-500/10 hover:border-amber-500/60 transition-all w-full justify-center"
+              >
+                <Plus className="w-4 h-4" /> Add Custom Role
+              </button>
+            </div>
+          )}
+
+          {/* STEP 4: Invite Members */}
+          {step === 4 && (
+            <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
+              <div>
+                <h2 className="text-xl font-bold text-[#3d200a] mb-2">Invite Your Team</h2>
+                <p className="text-[#8a5d33] font-medium leading-relaxed">
+                  Start adding colleagues to your workspace. Roles can be changed at any time.
+                </p>
+              </div>
+
+              <form onSubmit={handleAddInvite} className="flex gap-3">
+                <input
+                  type="text"
+                  value={currentInvite}
+                  onChange={(e) => setCurrentInvite(e.target.value)}
+                  placeholder="name@company.com, ceo@company.com"
+                  className="flex-1 bg-white border border-amber-500/30 rounded-xl px-4 py-3 text-[#3d200a] placeholder:text-[#8a5d33]/50 focus:outline-none focus:ring-2 focus:ring-[#8B0000]/50 transition-all shadow-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={!currentInvite.trim()}
+                  className="flex items-center gap-2 px-6 py-3 bg-[#8B0000] text-white rounded-xl font-bold text-sm hover:bg-[#730000] transition-all shadow-sm disabled:opacity-50"
+                >
+                  <Plus className="w-4 h-4" /> Add
+                </button>
+              </form>
+              <p className="text-xs text-[#8a5d33]/70 font-medium px-1">
+                You can add multiple emails at once. Separate them with spaces, commas, or newlines.
+              </p>
+
+              {invites.length > 0 && (
+                <div className="space-y-4 animate-in fade-in zoom-in-95 duration-300">
+                  <div className="border border-amber-500/20 rounded-xl bg-white shadow-sm mt-4 overflow-hidden">
+                    <table className="w-full text-left font-medium">
+                      <thead className="bg-[#fdf1df]">
+                        <tr>
+                          <th className="py-2.5 px-4 text-[#8a5d33] text-[10px] uppercase tracking-wider font-bold">Email</th>
+                          <th className="py-2.5 px-4 text-right text-[#8a5d33] text-[10px] uppercase tracking-wider font-bold">Role</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-amber-500/10">
+                        {invites.map((inv, index) => (
+                          <tr key={inv.email} className={`hover:bg-amber-500/5 transition-colors`}>
+                            <td className="py-3 px-4 flex items-center gap-3">
+                              <Mail className="w-4 h-4 text-amber-500/50" />
+                              <span className="text-[#3d200a] text-sm font-semibold">{inv.email}</span>
+                            </td>
+                            <td className="py-2 px-2 text-right">
+                            <div className="flex items-center justify-end gap-3">
+                              <RoleDropdown 
+                                currentRoleId={inv.roleId} 
+                                roles={roles} 
+                                onChange={(newRoleId) => handleUpdateInviteRole(inv.email, newRoleId)} 
+                                getRoleColorOptions={getRoleColorOptions}
+                              />
+                              <button
+                                onClick={() => handleRemoveInvite(inv.email)}
+                                className="text-red-500 hover:text-red-700 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                                title="Remove Invite"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex justify-end pt-2 border-b border-amber-500/10 pb-6">
+                    <button
+                      onClick={handleSendInvites}
+                      disabled={isSendingInvites}
+                      className="flex items-center gap-2 px-6 py-2.5 bg-[#8B0000] text-white rounded-xl font-bold shadow-md shadow-[#8B0000]/20 hover:bg-[#730000] transition-all disabled:opacity-50"
+                    >
+                      {isSendingInvites ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                      Send Invitations
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {sentInvites.length > 0 && (
+                <div className="mt-8 pt-4 animate-in fade-in slide-in-from-bottom-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-bold text-[#8a5d33] uppercase tracking-wider">Sent Invitations</h3>
+                    <span className="px-2.5 py-1 bg-amber-500/10 text-[#8a5d33] text-xs font-bold rounded-full border border-amber-500/20">
+                      {sentInvites.length} queued
+                    </span>
+                  </div>
+                  <div className="border border-amber-500/20 rounded-xl bg-white shadow-sm overflow-hidden">
+                    <table className="w-full text-left font-medium">
+                      <thead className="bg-[#f0e8db]">
+                        <tr>
+                          <th className="py-2.5 px-4 text-[#8a5d33] text-[10px] uppercase tracking-wider font-bold">Email</th>
+                          <th className="py-2.5 px-4 text-[#8a5d33] text-[10px] uppercase tracking-wider font-bold hidden sm:table-cell">Role</th>
+                          <th className="py-2.5 px-4 text-right text-[#8a5d33] text-[10px] uppercase tracking-wider font-bold">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-amber-500/10">
+                        {sentInvites.map((inv) => (
+                          <tr key={inv.id} className="hover:bg-amber-500/5 transition-colors">
+                            <td className="py-3 px-4 flex items-center gap-3">
+                              <span className="text-[#3d200a] text-sm font-semibold">{inv.email}</span>
+                            </td>
+                            <td className="py-3 px-4 hidden sm:table-cell">
+                              <span className={`inline-block px-2.5 py-1 rounded-md text-[10px] uppercase tracking-wider font-bold border ${getRoleColorOptions(inv.roleId, true)}`}>
+                                {roles.find(r => r.id === inv.roleId)?.name || "Member"}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 flex justify-end items-center gap-3">
+                              {inv.status === "pending" && (
+                                <span className="inline-flex items-center gap-1.5 text-amber-600 bg-amber-50 px-2.5 py-1 rounded-md text-xs font-bold border border-amber-200">
+                                  <Clock className="w-3.5 h-3.5" /> Pending
+                                </span>
+                              )}
+                              {inv.status === "accepted" && (
+                                <span className="inline-flex items-center gap-1.5 text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-md text-xs font-bold border border-emerald-200">
+                                  <CheckCircle2 className="w-3.5 h-3.5" /> Accepted
+                                </span>
+                              )}
+                              {inv.status === "declined" && (
+                                <span className="inline-flex items-center gap-1.5 text-red-600 bg-red-50 px-2.5 py-1 rounded-md text-xs font-bold border border-red-200">
+                                  <XCircle className="w-3.5 h-3.5" /> Declined
+                                </span>
+                              )}
+                              {(inv.status === "pending" || inv.status === "declined") && (
+                                <button
+                                  onClick={() => handleDeleteSentInvite(inv.id)}
+                                  className="text-red-500 hover:text-red-700 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                                  title="Revoke / Delete Invite"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-8 pt-8 border-t border-amber-500/20 text-center">
+                <div className="w-12 h-12 bg-amber-500/10 rounded-full flex items-center justify-center mx-auto mb-4 border border-amber-500/20">
+                  <Globe className="w-5 h-5 text-amber-500/70" />
+                </div>
+                <h3 className="text-lg font-bold text-[#3d200a] mb-2">Or share joining code</h3>
+                <p className="text-sm text-[#8a5d33] mb-6 max-w-[300px] mx-auto">
+                  Anyone with this code can automatically join your workspace.
+                </p>
+                
+                <div className="flex flex-col items-center">
+                  <div className="bg-[#fdf1df] border border-amber-500/30 rounded-xl px-8 py-4 mb-4 select-all font-mono text-2xl font-bold text-[#8B0000] tracking-[0.2em] shadow-inner">
+                    {org.slug}
+                  </div>
+                  <button
+                    onClick={handleCopyCode}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-white border border-amber-500/30 text-[#3d200a] rounded-xl font-bold text-sm hover:bg-[#fdf1df] transition-all shadow-sm"
+                  >
+                    {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-[#8a5d33]" />}
+                    {copied ? "Copied!" : "Copy Joining Code"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer Navigation */}
+        <div className="bg-[#fdf8f0] border-t border-amber-500/15 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="flex items-center justify-center sm:justify-start gap-4 w-full sm:w-auto">
+            <button
+              onClick={() => step > 1 ? navigateToStep(step - 1) : router.push("/app")}
+              className="flex items-center justify-center gap-2 px-5 py-2.5 text-[#8a5d33] font-bold hover:bg-amber-500/10 rounded-xl transition-colors w-full sm:w-auto"
+            >
+              <ArrowLeft className="w-4 h-4" /> {step > 1 ? "Back" : "Dashboard"}
+            </button>
+
+            {/* Desktop Auto-save indicator */}
+            <div className="hidden sm:flex items-center gap-2 text-sm font-medium transition-opacity duration-300 w-24">
+              {autoSaveStatus === "saving" && (
+                <span className="flex items-center gap-1.5 text-[#8a5d33]">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Saving...
+                </span>
+              )}
+              {autoSaveStatus === "saved" && (
+                <span className="flex items-center gap-1.5 text-emerald-600 animate-in fade-in zoom-in duration-300">
+                  <Check className="w-4 h-4" /> Auto-saved
+                </span>
+              )}
+            </div>
+          </div>
+
+          {step < 4 ? (
+            <button
+              onClick={() => navigateToStep(step + 1)}
+              className="flex items-center justify-center gap-2 px-8 py-2.5 bg-[#8B0000] text-white rounded-xl font-bold shadow-md shadow-[#8B0000]/20 hover:bg-[#730000] transition-all w-full sm:w-auto mt-4 sm:mt-0"
+            >
+              Continue <ArrowRight className="w-4 h-4" />
+            </button>
+          ) : (
+            <button
+              onClick={handleComplete}
+              disabled={saving}
+              className="group flex flex-col items-center justify-center px-8 py-2 bg-[#8B0000] text-white rounded-xl font-bold shadow-md shadow-[#8B0000]/20 hover:bg-[#730000] transition-all w-full sm:w-auto mt-4 sm:mt-0 disabled:opacity-50 min-w-[200px]"
+            >
+              <div className="flex items-center gap-2 text-sm leading-tight">
+                {saving ? "Finalizing Setup..." : "Go to Dashboard"}
+                {!saving && <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />}
+              </div>
+              <span className="text-[10px] text-white/70 font-medium">Skip / Finish Setup</span>
+            </button>
+          )}
+
+          {/* Mobile Auto-save indicator */}
+          <div className="sm:hidden flex items-center justify-center gap-2 text-sm font-medium h-6 mt-2">
+            {autoSaveStatus === "saving" && (
+              <span className="flex items-center gap-1.5 text-[#8a5d33]">
+                <Loader2 className="w-4 h-4 animate-spin" /> Saving...
+              </span>
+            )}
+            {autoSaveStatus === "saved" && (
+              <span className="flex items-center gap-1.5 text-emerald-600 animate-in fade-in zoom-in duration-300">
+                <Check className="w-4 h-4" /> Auto-saved
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

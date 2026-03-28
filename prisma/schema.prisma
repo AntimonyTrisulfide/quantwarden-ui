@@ -102,6 +102,7 @@ model Organization {
   members     Member[]
   invitations Invitation[]
   roles       Role[]
+  domains     Domain[]
 
   @@unique([slug])
   @@map("organization")
@@ -150,4 +151,16 @@ model LoginCode {
 
   @@index([email, code])
   @@map("login_code")
+}
+
+model Domain {
+  id             String       @id @default(cuid())
+  domain         String       @unique
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  verified       Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
+  @@map("domain")
 }

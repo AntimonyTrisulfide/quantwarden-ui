@@ -1,7 +1,7 @@
 "use client";
 
 import { useSession, signOut } from "@/lib/auth-client";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { Shield, LogOut, User, Mail, ChevronDown, Loader2 } from "lucide-react";
 import {
@@ -15,11 +15,16 @@ import {
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { data: sessionData, isPending } = useSession();
 
   // Redirect to login if not authenticated
   if (!isPending && !sessionData?.session) {
-    router.replace("/login");
+    if (pathname && pathname.includes("/app/invites/")) {
+      router.replace(`/login?callbackUrl=${encodeURIComponent(pathname)}`);
+    } else {
+      router.replace("/login");
+    }
     return null;
   }
 

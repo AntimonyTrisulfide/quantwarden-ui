@@ -164,13 +164,7 @@ export default function AppDashboard() {
       if (res.error) {
         setError(res.error.message || "Failed to create organization.");
       } else {
-        setShowCreateModal(false);
-        setCreateName("");
-        setCreateSlug("");
-        setAutoGenerate(true);
-        router.refresh();
-        // Refetch org list
-        fetchOrgs();
+        router.push(`/app/${createSlug.trim().toLowerCase()}`);
       }
     } catch {
       setError("Something went wrong.");
@@ -719,7 +713,7 @@ export default function AppDashboard() {
                   disabled={joining || joinSlug.length < 3}
                   className="flex-1 flex items-center justify-center py-3 px-4 rounded-xl font-bold text-white bg-linear-to-r from-[#8B0000] to-[#5a0000] hover:from-[#7a0000] hover:to-[#4a0000] transition-all shadow-md disabled:opacity-50"
                 >
-                  {joining ? <Loader2 className="w-5 h-5 animate-spin" /> : "Request to Join"}
+                  {joining ? <Loader2 className="w-5 h-5 animate-spin" /> : "Join"}
                 </button>
               </div>
             </form>
