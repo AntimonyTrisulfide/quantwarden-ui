@@ -3,17 +3,24 @@
 import { useState } from "react";
 import Link from "next/link";
 import { signIn, signOut, useSession } from "@/lib/auth-client";
-import { Loader2, Shield, Mail, LogOut, LayoutDashboard } from "lucide-react";
+import { Loader2, Shield, LogOut, LayoutDashboard } from "lucide-react";
 import { useRouter } from "next/navigation";
+import OtpInput from "@/components/ui/otp-input";
 
 export default function SignupPage() {
   const router = useRouter();
   const { data: sessionData, isPending: sessionLoading } = useSession();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
+  const [emailTouched, setEmailTouched] = useState(false);
+  const [nameTouched, setNameTouched] = useState(false);
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [loadingMagic, setLoadingMagic] = useState(false);
-  const [magicLinkSent, setMagicLinkSent] = useState(false);
+  const [otpScreen, setOtpScreen] = useState(false);
+
+  const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+  const emailError = emailTouched && email.length > 0 && !isValidEmail(email);
+  const nameError = nameTouched && name.trim().length === 0;
 
   const handleGoogleSignIn = async () => {
     setLoadingGoogle(true);
@@ -25,21 +32,26 @@ export default function SignupPage() {
     }
   };
 
-  const handleMagicLink = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSendCode = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!isValidEmail(email) || !name.trim()) return;
     setLoadingMagic(true);
     try {
-      // Magic links typically resolve names using fetchOptions body config if not explicitly typed initially 
-      // but native support allows name payload for creating users
-      await signIn.magicLink({ email, name, callbackURL: "/app" }, {
-        onSuccess: () => setMagicLinkSent(true)
-      });
-      setMagicLinkSent(true);
+      await signIn.magicLink({ email, name, callbackURL: "/app" });
+      setOtpScreen(true);
     } catch (error) {
       console.error(error);
     } finally {
       setLoadingMagic(false);
     }
+  };
+
+  const handleResend = async () => {
+    await signIn.magicLink({ email, name, callbackURL: "/app" });
+  };
+
+  const handleOtpVerified = (verifyUrl: string) => {
+    window.location.href = verifyUrl;
   };
 
   const handleLogout = async () => {
@@ -55,9 +67,8 @@ export default function SignupPage() {
   return (
     <div className="flex min-h-screen bg-[#fffcf5] text-slate-900 font-sans selection:bg-[#8B0000] selection:text-white">
       
-      {/* Left Column - Branding (Hidden on small screens) */}
+      {/* Left Column - Branding */}
       <div className="hidden lg:flex lg:flex-1 relative bg-[#8B0000] overflow-hidden flex-col justify-between p-12">
-        {/* Subtle Grid Background */}
         <div 
           className="absolute inset-0 opacity-20 pointer-events-none"
           style={{
@@ -66,7 +77,6 @@ export default function SignupPage() {
           }}
         />
         
-        {/* Top Logo */}
         <div className="relative z-10 flex items-center gap-3">
           <div className="w-12 h-12 border border-white/30 rounded-xl flex items-center justify-center bg-white/10 backdrop-blur-sm">
             <Shield className="w-6 h-6 text-white" />
@@ -77,7 +87,6 @@ export default function SignupPage() {
           </div>
         </div>
 
-        {/* Bottom Text Area */}
         <div className="relative z-10 max-w-xl">
           <div className="inline-block px-3 py-1 mb-6 border border-white/30 rounded-full bg-white/10 backdrop-blur-sm">
             <span className="text-white text-xs font-bold uppercase tracking-wider">Enterprise Onboarding</span>
@@ -108,7 +117,6 @@ export default function SignupPage() {
                 You are already logged in as <br/>
                 <strong className="text-[#8B0000] text-lg block mt-1">{sessionData.user.name ?? sessionData.user.email}</strong>
               </p>
-
               <div className="space-y-3">
                 <Link
                   href="/app"
@@ -116,7 +124,6 @@ export default function SignupPage() {
                 >
                   <LayoutDashboard className="w-5 h-5" /> Open App
                 </Link>
-                
                 <button
                   onClick={handleLogout}
                   className="w-full flex items-center justify-center gap-2 bg-[#fffcf5] border border-amber-500/40 text-[#8B0000] py-3.5 px-6 rounded-xl font-bold hover:bg-white hover:-translate-y-0.5 shadow-sm transition-all"
@@ -125,6 +132,14 @@ export default function SignupPage() {
                 </button>
               </div>
             </div>
+          ) : otpScreen ? (
+            /* OTP Verification Screen */
+            <OtpInput
+              email={email}
+              onVerified={handleOtpVerified}
+              onBack={() => setOtpScreen(false)}
+              onResend={handleResend}
+            />
           ) : (
             <>
               <div className="mb-10">
@@ -156,53 +171,61 @@ export default function SignupPage() {
                     <span className="w-full border-t border-amber-500/20"></span>
                   </div>
                   <div className="relative flex justify-center text-xs font-bold uppercase tracking-wider">
-                    <span className="bg-[#fffcf5] px-3 text-[#8a5d33]">Or use magic link</span>
+                    <span className="bg-[#fffcf5] px-3 text-[#8a5d33]">Or use email</span>
                   </div>
                 </div>
 
-                {magicLinkSent ? (
-                  <div className="bg-[#fdf1df] border border-amber-500/30 text-[#8B0000] p-6 rounded-xl text-center shadow-sm">
-                    <Mail className="w-8 h-8 mx-auto mb-3 text-[#8B0000]" />
-                    <h3 className="font-bold mb-1">Check your inbox</h3>
-                    <p className="text-sm text-[#8a5d33]">We sent a magic sign-in link to <strong>{email}</strong>.</p>
+                <form onSubmit={handleSendCode} className="space-y-5">
+                  <div className="space-y-1.5">
+                    <label htmlFor="name" className="text-xs font-bold text-[#8a5d33] uppercase tracking-wider px-1">
+                      Full Name <span className="text-red-600">*</span>
+                    </label>
+                    <input 
+                      id="name"
+                      type="text"
+                      required
+                      value={name}
+                      onChange={e => { setName(e.target.value); if (!nameTouched) setNameTouched(true); }}
+                      onBlur={() => setNameTouched(true)}
+                      placeholder="Your Display Name" 
+                      className={`w-full bg-white border rounded-xl px-4 py-3.5 text-[#3d200a] placeholder:text-[#8a5d33]/50 focus:outline-none focus:ring-2 focus:border-transparent transition-all shadow-sm ${
+                        nameError ? "border-red-400 focus:ring-red-400/50" : "border-amber-500/30 focus:ring-[#8B0000]/50"
+                      }`}
+                    />
+                    {nameError && (
+                      <p className="text-xs text-red-600 font-medium px-1 mt-1">Display name is required.</p>
+                    )}
                   </div>
-                ) : (
-                  <form onSubmit={handleMagicLink} className="space-y-5">
-                    <div className="space-y-1.5">
-                      <label htmlFor="name" className="text-xs font-bold text-[#8a5d33] uppercase tracking-wider px-1">Full Name</label>
-                      <input 
-                        id="name"
-                        type="text"
-                        required
-                        value={name}
-                        onChange={e => setName(e.target.value)}
-                        placeholder="John Doe" 
-                        className="w-full bg-white border border-amber-500/30 rounded-xl px-4 py-3.5 text-[#3d200a] placeholder:text-[#8a5d33]/50 focus:outline-none focus:ring-2 focus:ring-[#8B0000]/50 focus:border-transparent transition-all shadow-sm"
-                      />
-                    </div>
 
-                    <div className="space-y-1.5">
-                      <label htmlFor="email" className="text-xs font-bold text-[#8a5d33] uppercase tracking-wider px-1">Email Address</label>
-                      <input 
-                        id="email"
-                        type="email" 
-                        required
-                        value={email}
-                        onChange={e => setEmail(e.target.value)}
-                        placeholder="admin@company.com" 
-                        className="w-full bg-white border border-amber-500/30 rounded-xl px-4 py-3.5 text-[#3d200a] placeholder:text-[#8a5d33]/50 focus:outline-none focus:ring-2 focus:ring-[#8B0000]/50 focus:border-transparent transition-all shadow-sm"
-                      />
-                    </div>
-                    
-                    <button 
-                      type="submit"
-                      disabled={loadingMagic || !email}
-                      className="w-full flex items-center justify-center bg-[#8B0000] text-white py-4 px-6 rounded-xl font-bold text-base hover:bg-[#730000] transition-all hover:shadow-lg hover:shadow-[#8B0000]/20 active:scale-[0.98] disabled:opacity-50"
-                    >
-                      {loadingMagic ? <Loader2 className="w-5 h-5 animate-spin" /> : "Create Free Account"}
-                    </button>
-                  </form>
-                )}
+                  <div className="space-y-1.5">
+                    <label htmlFor="email" className="text-xs font-bold text-[#8a5d33] uppercase tracking-wider px-1">
+                      Email Address <span className="text-red-600">*</span>
+                    </label>
+                    <input 
+                      id="email"
+                      type="email" 
+                      required
+                      value={email}
+                      onChange={e => { setEmail(e.target.value); if (!emailTouched) setEmailTouched(true); }}
+                      onBlur={() => setEmailTouched(true)}
+                      placeholder="you@example.com" 
+                      className={`w-full bg-white border rounded-xl px-4 py-3.5 text-[#3d200a] placeholder:text-[#8a5d33]/50 focus:outline-none focus:ring-2 focus:border-transparent transition-all shadow-sm ${
+                        emailError ? "border-red-400 focus:ring-red-400/50" : "border-amber-500/30 focus:ring-[#8B0000]/50"
+                      }`}
+                    />
+                    {emailError && (
+                      <p className="text-xs text-red-600 font-medium px-1 mt-1">Please enter a valid email address.</p>
+                    )}
+                  </div>
+                  
+                  <button 
+                    type="submit"
+                    disabled={loadingMagic || !email || emailError || !name.trim()}
+                    className="w-full flex items-center justify-center bg-[#8B0000] text-white py-4 px-6 rounded-xl font-bold text-base hover:bg-[#730000] transition-all hover:shadow-lg hover:shadow-[#8B0000]/20 active:scale-[0.98] disabled:opacity-50"
+                  >
+                    {loadingMagic ? <Loader2 className="w-5 h-5 animate-spin" /> : "Send Verification Code"}
+                  </button>
+                </form>
               </div>
 
               <p className="mt-8 text-sm text-[#8a5d33] text-center w-full">
