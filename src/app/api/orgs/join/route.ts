@@ -20,8 +20,8 @@ export async function POST(req: NextRequest) {
     }
 
     // Find organization
-    const orgRows = await prisma.$queryRawUnsafe<{ id: string }[]>(
-      `SELECT id FROM "organization" WHERE slug = $1 LIMIT 1`,
+    const orgRows = await prisma.$queryRawUnsafe<{ id: string, isPublic: boolean }[]>(
+      `SELECT id, "isPublic" FROM "organization" WHERE slug = $1 LIMIT 1`,
       slug.toLowerCase()
     );
 
@@ -29,6 +29,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Organization not found. Check the code and try again." }, { status: 404 });
     }
     const orgId = orgRows[0].id;
+    const isPublic = orgRows[0].isPublic;
 
     // Check if user is already a member
     const memberRows = await prisma.$queryRawUnsafe<{ id: string }[]>(
@@ -41,18 +42,40 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "You are already a member of this organization." }, { status: 400 });
     }
 
-    // Add user as a member
-    const newMemberId = crypto.randomUUID().replace(/-/g, "");
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt") VALUES ($1, $2, $3, $4, $5)`,
-      newMemberId,
+    // Check if there's already a pending request
+    const existingRequest = await prisma.$queryRawUnsafe<{ id: string }[]>(
+      `SELECT id FROM "join_request" WHERE "organizationId" = $1 AND "userId" = $2 AND status = 'pending' LIMIT 1`,
       orgId,
-      session.user.id,
-      "member",
-      new Date()
+      session.user.id
     );
+    if (existingRequest.length > 0) {
+      return NextResponse.json({ error: "You already have a pending request for this organization." }, { status: 400 });
+    }
 
-    return NextResponse.json({ success: true, organizationId: orgId });
+    if (isPublic) {
+      // Public org: instant join
+      const newMemberId = crypto.randomUUID().replace(/-/g, "");
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt") VALUES ($1, $2, $3, $4, $5)`,
+        newMemberId,
+        orgId,
+        session.user.id,
+        "member",
+        new Date()
+      );
+      return NextResponse.json({ success: true, instant: true, organizationId: orgId });
+    } else {
+      // Private org: create join request for admin approval
+      const requestId = crypto.randomUUID();
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO "join_request" (id, "organizationId", "userId", status, "createdAt") VALUES ($1, $2, $3, 'pending', $4)`,
+        requestId,
+        orgId,
+        session.user.id,
+        new Date()
+      );
+      return NextResponse.json({ success: true, instant: false, requestPending: true, organizationId: orgId });
+    }
   } catch (error) {
     console.error("Join org error:", error);
     return NextResponse.json(

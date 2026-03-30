@@ -3,7 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import OnboardingFlow from "./_components/OnboardingFlow";
-import DashboardView from "./_components/DashboardView";
+import OrgDashboard from "./_components/OrgDashboard";
+import PendingRequestView from "./_components/PendingRequestView";
 
 export default async function OrganizationPage(props: { params: Promise<{ org_slug: string }> }) {
   const { org_slug } = await props.params;
@@ -16,8 +17,8 @@ export default async function OrganizationPage(props: { params: Promise<{ org_sl
     redirect("/login");
   }
 
-  // Get the org and verify membership
-  const orgRows = await prisma.$queryRawUnsafe<{
+  // Get the org
+  const orgBasicRows = await prisma.$queryRawUnsafe<{
     id: string;
     name: string;
     slug: string;
@@ -25,23 +26,60 @@ export default async function OrganizationPage(props: { params: Promise<{ org_sl
     isPublic: boolean;
     discoverable: boolean;
     logo: string | null;
-    memberRole: string;
   }[]>(
-    `SELECT o.id, o.name, o.slug, o.metadata, o."isPublic", o.discoverable, o.logo, m.role as "memberRole" 
-     FROM "organization" o
-     INNER JOIN "member" m ON m."organizationId" = o.id AND m."userId" = $1
-     WHERE o.slug = $2 LIMIT 1`,
-    session.user.id,
+    `SELECT id, name, slug, metadata, "isPublic", discoverable, logo 
+     FROM "organization" WHERE slug = $1 LIMIT 1`,
     org_slug.toLowerCase()
   );
 
-  if (orgRows.length === 0) {
-    // If not a member, or doesn't exist
+  if (orgBasicRows.length === 0) {
     redirect("/app");
   }
 
-  const org = { ...orgRows[0], domains: [] as string[], roles: [] as any[] };
-  
+  const orgBasic = orgBasicRows[0];
+
+  // Check membership
+  const memberRows = await prisma.$queryRawUnsafe<{
+    id: string;
+    role: string;
+  }[]>(
+    `SELECT id, role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
+    orgBasic.id,
+    session.user.id
+  );
+
+  // If not a member, check for pending join requests
+  if (memberRows.length === 0) {
+    const requestRows = await prisma.$queryRawUnsafe<{
+      id: string;
+      status: string;
+      createdAt: Date;
+    }[]>(
+      `SELECT id, status, "createdAt" FROM "join_request" 
+       WHERE "organizationId" = $1 AND "userId" = $2 
+       ORDER BY "createdAt" DESC LIMIT 1`,
+      orgBasic.id,
+      session.user.id
+    );
+
+    if (requestRows.length > 0) {
+      return (
+        <PendingRequestView
+          org={{ id: orgBasic.id, name: orgBasic.name, slug: orgBasic.slug, logo: orgBasic.logo }}
+          request={{ id: requestRows[0].id, status: requestRows[0].status, createdAt: requestRows[0].createdAt }}
+        />
+      );
+    }
+
+    // Not a member, no request — redirect
+    redirect("/app");
+  }
+
+  const memberRole = memberRows[0].role;
+
+  // Build org data with domains and roles
+  const org = { ...orgBasic, domains: [] as string[], roles: [] as any[] };
+
   // Fetch domains
   const domainsRows = await prisma.$queryRawUnsafe<{ domain: string }[]>(
     `SELECT domain FROM "domain" WHERE "organizationId" = $1`,
@@ -73,11 +111,17 @@ export default async function OrganizationPage(props: { params: Promise<{ org_sl
     }
   }
 
-  if (!setupComplete && (orgRows[0].memberRole === "owner" || orgRows[0].memberRole === "admin")) {
+  if (!setupComplete && (memberRole === "owner" || memberRole === "admin")) {
     // Render onboarding flow
     return <OnboardingFlow org={org} />;
   }
 
-  // Render actual dashboard layout
-  return <DashboardView org={org} />;
+  // Render actual dashboard
+  return (
+    <OrgDashboard
+      org={org}
+      currentUserRole={memberRole}
+      currentUserId={session.user.id}
+    />
+  );
 }

@@ -46,12 +46,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="min-h-screen bg-[#fffcf5] font-sans text-slate-900 selection:bg-[#8B0000] selection:text-white">
+    <div className="min-h-screen bg-[#fffcf5] font-sans text-slate-900 selection:bg-[#8B0000] selection:text-white overscroll-none">
       <Suspense fallback={null}>
         <NavigationProgress />
       </Suspense>
       {/* Top Navigation Bar */}
-      <nav className="sticky top-0 z-50 w-full bg-white/80 backdrop-blur-lg border-b border-amber-500/15 shadow-sm">
+      <nav className="fixed top-0 left-0 right-0 z-50 w-full bg-white/80 backdrop-blur-lg border-b border-amber-500/15 shadow-sm">
         <div className="max-w-[1440px] mx-auto px-6 sm:px-8 h-16 flex items-center justify-between">
           {/* Left: Logo */}
           <Link href="/app" className="flex items-center gap-2.5 group">
@@ -125,7 +125,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </nav>
 
       {/* Main Content */}
-      <main className="max-w-[1440px] mx-auto px-6 sm:px-8 py-8">
+      <main className="max-w-[1440px] mx-auto px-6 sm:px-8 py-8 pt-24">
         {children}
       </main>
     </div>

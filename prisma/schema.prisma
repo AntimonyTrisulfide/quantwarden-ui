@@ -36,6 +36,7 @@ model User {
   accounts      Account[]
   members       Member[]
   invitations   Invitation[]
+  joinRequests  JoinRequest[]
 
   @@unique([email])
   @@map("user")
@@ -99,10 +100,11 @@ model Organization {
   metadata    String?
   isPublic    Boolean      @default(false)
   discoverable Boolean     @default(false)
-  members     Member[]
-  invitations Invitation[]
-  roles       Role[]
-  domains     Domain[]
+  members      Member[]
+  invitations  Invitation[]
+  roles        Role[]
+  domains      Domain[]
+  joinRequests JoinRequest[]
 
   @@unique([slug])
   @@map("organization")
@@ -151,6 +153,20 @@ model LoginCode {
 
   @@index([email, code])
   @@map("login_code")
+}
+
+model JoinRequest {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status         String       @default("pending") // pending, accepted, denied
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId])
+  @@index([userId])
+  @@map("join_request")
 }
 
 model Domain {

@@ -1,0 +1,151 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useSession } from "@/lib/auth-client";
+import {
+  Shield,
+  Users,
+  ArrowLeft,
+  ChevronRight,
+  Building2,
+  User,
+} from "lucide-react";
+import TeamManagement from "./TeamManagement";
+
+interface OrgDashboardProps {
+  org: any;
+  currentUserRole: string;
+  currentUserId: string;
+}
+
+const navItems = [
+  { id: "team", label: "Team Management", icon: Users },
+];
+
+export default function OrgDashboard({ org, currentUserRole, currentUserId }: OrgDashboardProps) {
+  const [activeSection, setActiveSection] = useState("team");
+  const { data: sessionData } = useSession();
+  const user = sessionData?.user;
+
+  const isAdmin = currentUserRole === "owner" || currentUserRole === "admin";
+
+  const initials = user?.name
+    ? user.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)
+    : user?.email?.charAt(0).toUpperCase() ?? "?";
+
+  return (
+    <div className="fixed inset-0 top-16 overflow-hidden z-10">
+      {/* Warm gold gradient background — matches /dashboard */}
+      <div
+        aria-hidden
+        className="absolute inset-0 z-0 bg-[linear-gradient(160deg,#fff7e6_0%,#fde68a_35%,#fbbf24_65%,#f59e0b_100%)]"
+      />
+
+      {/* Sidebar */}
+      <aside className="absolute left-0 top-0 bottom-0 w-72 bg-[#8B0000] z-20 hidden lg:flex flex-col">
+        {/* Sidebar Header — Org Info */}
+        <div className="border-b border-white/10 px-5 py-5">
+          <Link
+            href="/app"
+            className="flex items-center gap-2 text-red-200 text-xs font-bold uppercase tracking-wider hover:text-white transition-colors mb-4"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" /> All Organizations
+          </Link>
+          <div className="flex items-center gap-3">
+            {org.logo ? (
+              <img src={org.logo} alt={org.name} className="w-10 h-10 rounded-full object-cover shadow-md" />
+            ) : (
+              <div className="w-10 h-10 bg-white/15 rounded-xl flex items-center justify-center shrink-0">
+                <Building2 className="w-5 h-5 text-white" />
+              </div>
+            )}
+            <div className="overflow-hidden">
+              <p className="text-sm font-bold text-white truncate">{org.name}</p>
+              <p className="text-xs text-red-200 font-mono tracking-wider">{org.slug}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Nav Items */}
+        <nav className="flex-1 px-3 py-5 space-y-1">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = activeSection === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveSection(item.id)}
+                className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium transition-all cursor-pointer ${
+                  active
+                    ? "bg-white/20 text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.3)]"
+                    : "text-red-100 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Icon className={`h-4.5 w-4.5 shrink-0 ${active ? "text-white" : "text-red-300 group-hover:text-white"}`} />
+                <span className="font-bold">{item.label}</span>
+                <ChevronRight className={`ml-auto h-4 w-4 transition-transform ${active ? "rotate-90 text-white/50" : "text-red-400 group-hover:text-white/50"}`} />
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Sidebar Footer — User */}
+        <div className="border-t border-white/10 px-4 py-4">
+          <div className="flex items-center gap-3 bg-white/10 rounded-xl p-3">
+            <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center text-white text-sm font-bold shrink-0">
+              {initials}
+            </div>
+            <div className="overflow-hidden">
+              <p className="text-sm font-bold text-white truncate">{user?.name ?? "User"}</p>
+              <p className="text-xs text-red-200 truncate capitalize">{currentUserRole}</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Mobile Sidebar Navigation */}
+      <div className="lg:hidden bg-white/60 backdrop-blur-lg border-b border-amber-500/15 px-4 py-3 sticky top-0 z-10 flex items-center gap-3 overflow-x-auto">
+        <Link
+          href="/app"
+          className="shrink-0 p-2 rounded-lg text-[#8a5d33] hover:bg-amber-500/10 transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" />
+        </Link>
+        <div className="h-6 w-px bg-amber-500/20 shrink-0" />
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const active = activeSection === item.id;
+          return (
+            <button
+              key={item.id}
+              onClick={() => setActiveSection(item.id)}
+              className={`shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+                active
+                  ? "bg-[#8B0000] text-white shadow-md"
+                  : "text-[#8a5d33] hover:bg-amber-500/10"
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Main Content Area */}
+      <main className="relative z-10 lg:ml-72 h-full overflow-y-auto lg:overflow-hidden flex flex-col">
+        <div className="max-w-[1100px] w-full mx-auto px-6 sm:px-8 py-6 flex-1 flex flex-col min-h-0">
+          {activeSection === "team" && (
+            <TeamManagement
+              org={org}
+              currentUserRole={currentUserRole}
+              currentUserId={currentUserId}
+              isAdmin={isAdmin}
+            />
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}

@@ -12,6 +12,17 @@ interface OrgData {
   role: string;
   memberCount: number;
 }
+
+interface PendingRequest {
+  requestId: string;
+  organizationId: string;
+  orgName: string;
+  orgSlug: string;
+  orgLogo: string | null;
+  status: string;
+  createdAt: string;
+  memberCount: number;
+}
 import {
   Shield,
   ShieldCheck,
@@ -33,6 +44,9 @@ import {
   AlertTriangle,
   RefreshCw,
   Hash,
+  Clock,
+  XCircle,
+  CheckCircle2,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -40,7 +54,9 @@ import { useRouter } from "next/navigation";
 export default function AppDashboard() {
   const { data: sessionData, isPending } = useSession();
   const [orgs, setOrgs] = useState<OrgData[]>([]);
+  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
   const [orgsLoading, setOrgsLoading] = useState(true);
+  const [joinSuccess, setJoinSuccess] = useState<string | null>(null);
   const router = useRouter();
 
   // Fetch orgs from custom API
@@ -50,6 +66,7 @@ export default function AppDashboard() {
       const res = await fetch("/api/orgs/list");
       const data = await res.json();
       setOrgs(data.organizations ?? []);
+      setPendingRequests(data.pendingRequests ?? []);
     } catch {
       console.error("Failed to fetch orgs");
     } finally {
@@ -191,13 +208,34 @@ export default function AppDashboard() {
       } else {
         setShowJoinModal(false);
         setJoinSlug("");
-        router.refresh();
-        fetchOrgs();
+        if (data.instant) {
+          // Instant join (public org)
+          router.refresh();
+          fetchOrgs();
+        } else {
+          // Request sent (private org)
+          setJoinSuccess("Your request has been sent to the organization admin for approval.");
+          fetchOrgs();
+          setTimeout(() => setJoinSuccess(null), 6000);
+        }
       }
     } catch {
       setError("Something went wrong.");
     } finally {
       setJoining(false);
+    }
+  };
+
+  const handleWithdrawRequest = async (requestId: string) => {
+    try {
+      const res = await fetch("/api/orgs/join-requests", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId }),
+      });
+      if (res.ok) fetchOrgs();
+    } catch {
+      console.error("Failed to withdraw request");
     }
   };
 
@@ -468,6 +506,72 @@ export default function AppDashboard() {
           </div>
         )}
       </div>
+
+      {/* Join Success Banner */}
+      {joinSuccess && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-6 py-4 flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
+          <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+          <p className="text-sm font-medium text-emerald-800">{joinSuccess}</p>
+          <button onClick={() => setJoinSuccess(null)} className="ml-auto text-emerald-400 hover:text-emerald-600">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Pending Join Requests */}
+      {pendingRequests.length > 0 && (
+        <div>
+          <h2 className="text-xl font-extrabold text-[#3d200a] mb-5 tracking-tight">Pending Requests</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            {pendingRequests.map((req) => (
+              <div
+                key={req.requestId}
+                className={`relative bg-white border rounded-2xl shadow-sm p-6 flex flex-col ${
+                  req.status === "denied" ? "border-red-200 bg-red-50/30" : "border-amber-500/20"
+                }`}
+              >
+                <div className="flex items-start gap-4 mb-4">
+                  {req.orgLogo ? (
+                    <img src={req.orgLogo} alt={req.orgName} className="w-12 h-12 rounded-full object-cover shadow-sm bg-white" />
+                  ) : (
+                    <div className="w-12 h-12 bg-amber-500/10 rounded-full flex items-center justify-center shrink-0">
+                      <Building2 className="w-6 h-6 text-amber-600" />
+                    </div>
+                  )}
+                  <div className="overflow-hidden flex-1">
+                    <h3 className="text-lg font-extrabold text-[#3d200a] truncate">{req.orgName}</h3>
+                    <p className="text-sm text-[#8a5d33] font-mono">{req.orgSlug}</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 mb-4">
+                  {req.status === "pending" ? (
+                    <span className="inline-flex items-center gap-1.5 text-sm font-bold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200">
+                      <Clock className="w-3.5 h-3.5" /> Request Pending
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-sm font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded-lg border border-red-200">
+                      <XCircle className="w-3.5 h-3.5" /> Request Denied
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between mt-auto pt-2">
+                  <span className="text-xs text-[#8a5d33]/60">
+                    Requested {new Date(req.createdAt).toLocaleDateString()}
+                  </span>
+                  <button
+                    onClick={() => handleWithdrawRequest(req.requestId)}
+                    className="text-xs font-bold text-red-500 hover:text-red-700 px-3 py-1.5 hover:bg-red-50 rounded-lg transition-colors"
+                  >
+                    {req.status === "denied" ? "Dismiss" : "Withdraw"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Quick Links */}
       <div>

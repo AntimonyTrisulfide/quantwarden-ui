@@ -43,7 +43,31 @@ export async function GET(req: NextRequest) {
       userId
     );
 
-    return NextResponse.json({ organizations: orgs });
+    // Also fetch pending/denied join requests for the user
+    const pendingRequests = await prisma.$queryRawUnsafe<
+      {
+        requestId: string;
+        organizationId: string;
+        orgName: string;
+        orgSlug: string;
+        orgLogo: string | null;
+        status: string;
+        createdAt: Date;
+        memberCount: number;
+      }[]
+    >(
+      `SELECT 
+        jr.id as "requestId", jr."organizationId", jr.status, jr."createdAt",
+        o.name as "orgName", o.slug as "orgSlug", o.logo as "orgLogo",
+        (SELECT COUNT(*)::int FROM "member" m2 WHERE m2."organizationId" = o.id) as "memberCount"
+      FROM "join_request" jr
+      INNER JOIN "organization" o ON o.id = jr."organizationId"
+      WHERE jr."userId" = $1 AND jr.status IN ('pending', 'denied')
+      ORDER BY jr."createdAt" DESC`,
+      userId
+    );
+
+    return NextResponse.json({ organizations: orgs, pendingRequests });
   } catch (error) {
     console.error("List orgs error:", error);
     return NextResponse.json(
