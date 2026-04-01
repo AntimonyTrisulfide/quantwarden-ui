@@ -7,9 +7,7 @@ import NmapAssetIntelligenceClient from "./_components/NmapAssetIntelligenceClie
 export default async function NmapAssetIntelligencePage({
   params,
 }: {
-  params:
-    | Promise<{ org_slug: string; asset_id: string }>
-    | { org_slug: string; asset_id: string };
+  params: Promise<{ org_slug: string; asset_id: string }>;
 }) {
   const resolvedParams = await params;
 
