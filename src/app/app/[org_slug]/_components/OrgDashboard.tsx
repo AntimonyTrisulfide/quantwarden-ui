@@ -14,6 +14,10 @@ import {
 import TeamManagement from "./TeamManagement";
 import AssetManagement from "./AssetManagement";
 import AssetScanning from "./AssetScanning";
+import OrgOverview from "./OrgOverview";
+import NmapScanning from "./NmapScanning";
+import NmapOverview from "./NmapOverview";
+import { Activity, Server } from "lucide-react";
 
 interface OrgDashboardProps {
   org: any;
@@ -22,13 +26,16 @@ interface OrgDashboardProps {
 }
 
 const navItems = [
+  { id: "overview", label: "Security Overview", icon: Activity },
   { id: "asset", label: "Asset Management", icon: Shield },
   { id: "scan", label: "Asset Scanning", icon: Shield },
+  { id: "nmap-overview", label: "Nmap Overview", icon: Activity },
+  { id: "nmap-scan", label: "Nmap Scanning", icon: Server },
   { id: "team", label: "Team Management", icon: Users },
 ];
 
 export default function OrgDashboard({ org, currentUserRole, currentUserId }: OrgDashboardProps) {
-  const [activeSection, setActiveSection] = useState("asset");
+  const [activeSection, setActiveSection] = useState("overview");
   const { data: sessionData } = useSession();
   const user = sessionData?.user;
 
@@ -140,6 +147,12 @@ export default function OrgDashboard({ org, currentUserRole, currentUserId }: Or
       {/* Main Content Area */}
       <main className="relative z-10 lg:ml-72 h-full overflow-y-auto lg:overflow-hidden flex flex-col">
         <div className="max-w-[1100px] w-full mx-auto px-6 sm:px-8 py-6 flex-1 flex flex-col min-h-0">
+          {activeSection === "overview" && (
+            <OrgOverview
+              org={org}
+              isAdmin={isAdmin}
+            />
+          )}
           {activeSection === "team" && (
             <TeamManagement
               org={org}
@@ -158,6 +171,18 @@ export default function OrgDashboard({ org, currentUserRole, currentUserId }: Or
           )}
           {activeSection === "scan" && (
             <AssetScanning
+              org={org}
+              isAdmin={isAdmin}
+            />
+          )}
+          {activeSection === "nmap-overview" && (
+            <NmapOverview
+              org={org}
+              isAdmin={isAdmin}
+            />
+          )}
+          {activeSection === "nmap-scan" && (
+            <NmapScanning
               org={org}
               isAdmin={isAdmin}
             />

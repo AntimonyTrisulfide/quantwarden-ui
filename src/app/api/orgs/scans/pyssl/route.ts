@@ -67,13 +67,20 @@ export async function POST(req: NextRequest) {
       });
       clearTimeout(timeout);
 
-      if (!response.ok) {
-        throw new Error(`PySSL responded with: ${response.status}`);
-      }
-
       const rawResult = await response.text();
       let parsed = {};
       try { parsed = JSON.parse(rawResult); } catch(e){}
+
+      if (!response.ok) {
+        // Save exactly what PySSL told us (e.g., DNS resolution failed)
+        await prisma.$executeRawUnsafe(
+          `UPDATE "asset_scan" SET status = 'failed', "resultData" = $1, "completedAt" = $2 WHERE id = $3`,
+          rawResult,
+          new Date(),
+          scanId
+        );
+        return NextResponse.json({ success: true, scanId, status: "failed", data: parsed });
+      }
 
       // 2. Commit success
       await prisma.$executeRawUnsafe(

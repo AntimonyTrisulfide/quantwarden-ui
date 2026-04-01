@@ -101,7 +101,11 @@ export default function AppDashboard() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [smoothedScrollY, setSmoothedScrollY] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
+  const targetScrollYRef = useRef(0);
+  const animatedScrollYRef = useRef(0);
+  const scrollAnimRef = useRef<number | null>(null);
 
   // Auto-generate slug when modal opens
   const generateSlug = useCallback(async () => {
@@ -156,6 +160,45 @@ export default function AppDashboard() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Smooth, inertial scroll tracking to avoid fast-scroll flicker.
+  useEffect(() => {
+    const animateScroll = () => {
+      const target = targetScrollYRef.current;
+      const current = animatedScrollYRef.current;
+      const delta = target - current;
+      const next = Math.abs(delta) < 0.25 ? target : current + delta * 0.18;
+
+      animatedScrollYRef.current = next;
+      setSmoothedScrollY(next);
+
+      if (Math.abs(target - next) < 0.25) {
+        scrollAnimRef.current = null;
+        return;
+      }
+
+      scrollAnimRef.current = window.requestAnimationFrame(animateScroll);
+    };
+
+    const onScroll = () => {
+      targetScrollYRef.current = window.scrollY || 0;
+      if (scrollAnimRef.current === null) {
+        scrollAnimRef.current = window.requestAnimationFrame(animateScroll);
+      }
+    };
+
+    targetScrollYRef.current = window.scrollY || 0;
+    animatedScrollYRef.current = targetScrollYRef.current;
+    setSmoothedScrollY(targetScrollYRef.current);
+    window.addEventListener("scroll", onScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (scrollAnimRef.current !== null) {
+        window.cancelAnimationFrame(scrollAnimRef.current);
+      }
+    };
+  }, []);
+
   if (isPending) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
@@ -166,6 +209,17 @@ export default function AppDashboard() {
 
   const userName = sessionData?.user?.name ?? "there";
   const orgList = orgs;
+  const collapseProgress = Math.min(smoothedScrollY / 90, 1);
+  const heroRadius = 24 + 975 * collapseProgress;
+  const heroPadY = 46 - 36 * collapseProgress;
+  const heroPadX = 48 - 32 * collapseProgress;
+  const heroWidth = `calc(${1 - collapseProgress} * 100% + ${collapseProgress} * 280px)`;
+  const gridOpacity = 0.15 * (1 - collapseProgress);
+  const titleOpacity = 1 - collapseProgress * 1.35;
+  const subtitleOpacity = 1 - collapseProgress * 1.6;
+  const rowGap = 16 - 8 * collapseProgress;
+  const labelOpacity = 0.6 + 0.4 * collapseProgress;
+  const iconSize = 32 - 12 * collapseProgress;
 
   const handleCreateOrg = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -180,12 +234,12 @@ export default function AppDashboard() {
       });
       if (res.error) {
         setError(res.error.message || "Failed to create organization.");
+        setCreating(false);
       } else {
         router.push(`/app/${createSlug.trim().toLowerCase()}`);
       }
     } catch {
       setError("Something went wrong.");
-    } finally {
       setCreating(false);
     }
   };
@@ -288,28 +342,60 @@ export default function AppDashboard() {
   };
 
   return (
-    <div className="space-y-10">
+    <div className="relative isolate min-h-screen">
+      <div
+        aria-hidden
+        className="fixed inset-0 z-0 pointer-events-none bg-[linear-gradient(160deg,#fff7e6_0%,#fde68a_35%,#fbbf24_65%,#f59e0b_100%)]"
+      />
+
+      <div className="relative z-10 space-y-10">
       {/* Welcome Header */}
-      <div className="relative overflow-hidden rounded-2xl bg-[#8B0000] p-8 md:p-12 shadow-xl shadow-[#8B0000]/10">
+      <div className="sticky top-24 z-20">
         <div
-          className="absolute inset-0 opacity-15 pointer-events-none"
+          className="relative overflow-hidden bg-[#8B0000] shadow-xl shadow-[#8B0000]/10"
           style={{
+            borderRadius: `${heroRadius}px`,
+            paddingTop: `${heroPadY}px`,
+            paddingBottom: `${heroPadY}px`,
+            paddingLeft: `${heroPadX}px`,
+            paddingRight: `${heroPadX}px`,
+            width: heroWidth,
+            marginLeft: "auto",
+            marginRight: "auto",
+          }}
+        >
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            opacity: gridOpacity,
             backgroundImage: "linear-gradient(#ffffff 1px, transparent 1px), linear-gradient(90deg, #ffffff 1px, transparent 1px)",
             backgroundSize: "32px 32px"
           }}
         />
-        <div className="relative z-10">
-          <div className="flex items-center gap-3 mb-4">
-            <Shield className="w-8 h-8 text-white/80" />
-            <span className="text-xs font-bold text-white/60 uppercase tracking-widest">Dashboard</span>
+        <div className={`relative z-10 ${collapseProgress > 0.9 ? "text-center" : "text-left"}`}>
+          <div
+            className={`flex items-center ${collapseProgress > 0.9 ? "justify-center" : "justify-start"}`}
+            style={{ gap: `${rowGap}px`, marginBottom: `${4 * (1 - collapseProgress)}px` }}
+          >
+            <Shield className="text-white/85" style={{ width: `${iconSize}px`, height: `${iconSize}px` }} />
+            <span className="text-xs tracking-[0.2em] uppercase" style={{ color: `rgba(255,255,255,${labelOpacity})`, fontWeight: 700 + Math.round(150 * collapseProgress) }}>User Dashboard</span>
           </div>
-          <h1 className="text-3xl md:text-4xl font-black text-white mb-2 tracking-tight">
-            Welcome back, {userName}
+          <h1
+            className="text-3xl md:text-4xl font-black text-white tracking-tight overflow-hidden"
+            style={{
+              opacity: titleOpacity,
+              maxHeight: `${56 * (1 - collapseProgress)}px`,
+              marginTop: `${8 * (1 - collapseProgress)}px`,
+              transformOrigin: collapseProgress > 0.9 ? "center center" : "left center",
+            }}
+          >
+            Welcome, {userName}
           </h1>
-          <p className="text-white/70 text-base md:text-lg font-medium max-w-2xl">
+          <p className={`text-white/70 text-base md:text-lg font-medium max-w-2xl overflow-hidden ${collapseProgress > 0.9 ? "mx-auto" : "mx-0"}`} style={{ opacity: subtitleOpacity, maxHeight: `${96 * (1 - collapseProgress)}px`, marginTop: `${8 * (1 - collapseProgress)}px` }}>
             Your quantum-proof security command centre. Monitor assets, generate compliance reports, and manage your team from one place.
           </p>
         </div>
+      </div>
       </div>
 
       {/* Organizations Section */}
@@ -320,7 +406,7 @@ export default function AppDashboard() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => { setShowJoinModal(true); setError(""); }}
-                className="flex items-center gap-1.5 px-4 py-2 text-sm font-bold text-[#8B0000] border border-[#8B0000]/20 rounded-xl hover:bg-[#8B0000]/5 transition-all"
+                className="flex items-center gap-1.5 px-4 py-2 text-sm font-bold text-[#8B0000] bg-white/55 backdrop-blur-sm border border-white/60 rounded-xl hover:bg-white/70 transition-all shadow-sm"
               >
                 <Hash className="w-4 h-4" /> Join
               </button>
@@ -340,7 +426,7 @@ export default function AppDashboard() {
           </div>
         ) : orgList.length === 0 ? (
           /* Empty State */
-          <div className="bg-white border-2 border-dashed border-amber-500/30 rounded-2xl p-12 text-center">
+          <div className="bg-white/55 backdrop-blur-md border-2 border-dashed border-white/70 rounded-2xl p-12 text-center shadow-lg shadow-amber-900/10">
             <div className="w-20 h-20 bg-[#8B0000]/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
               <Building2 className="w-10 h-10 text-[#8B0000]" />
             </div>
@@ -357,7 +443,7 @@ export default function AppDashboard() {
               </button>
               <button
                 onClick={() => { setShowJoinModal(true); setError(""); }}
-                className="flex items-center gap-2 px-6 py-3.5 bg-white border border-amber-500/30 text-[#3d200a] rounded-xl font-bold text-base hover:bg-[#fdf1df] transition-all shadow-sm hover:-translate-y-0.5 active:scale-[0.98]"
+                className="flex items-center gap-2 px-6 py-3.5 bg-white/80 backdrop-blur-sm border border-white/70 text-[#3d200a] rounded-xl font-bold text-base hover:bg-white transition-all shadow-sm hover:-translate-y-0.5 active:scale-[0.98]"
               >
                 <Users className="w-5 h-5" /> Join Organization
               </button>
@@ -369,10 +455,17 @@ export default function AppDashboard() {
             {orgList.map((org) => (
               <div
                 key={org.id}
-                className="group relative bg-white border border-amber-500/20 rounded-2xl shadow-sm hover:shadow-xl hover:border-amber-400/60 hover:-translate-y-1 transition-all hover:bg-gradient-to-br hover:from-[#fffef5] hover:to-[#f9bc1b]/50 flex flex-col"
+                className="group relative bg-white/58 backdrop-blur-md border border-white/60 rounded-2xl shadow-md shadow-amber-900/10 hover:shadow-xl hover:border-amber-200/80 hover:-translate-y-1 transition-all hover:bg-gradient-to-br hover:from-white/70 hover:to-[#f9bc1b]/30 flex flex-col"
               >
+                {/* Clickable surface (excluding buttons layered above) */}
+                <Link
+                  href={`/app/${org.slug}`}
+                  aria-label={`Open ${org.name}`}
+                  className="absolute inset-0 z-0 rounded-2xl"
+                />
+
                 {/* 3-dot menu */}
-                <div className="absolute top-4 right-4 z-10" ref={openMenuId === org.id ? menuRef : null}>
+                <div className="absolute top-4 right-4 z-30" ref={openMenuId === org.id ? menuRef : null}>
                   <button
                     onClick={(e) => {
                       e.preventDefault();
@@ -385,7 +478,7 @@ export default function AppDashboard() {
                   </button>
 
                   {openMenuId === org.id && (
-                    <div className="absolute right-0 top-9 w-48 bg-white border border-amber-500/20 rounded-xl shadow-xl z-20 py-1.5 animate-in fade-in slide-in-from-top-1">
+                    <div className="absolute right-0 top-9 w-48 bg-white/95 backdrop-blur-md border border-white/70 rounded-xl shadow-xl z-40 py-1.5 animate-in fade-in slide-in-from-top-1">
                       <button
                         onClick={(e) => {
                           e.preventDefault();
@@ -430,8 +523,8 @@ export default function AppDashboard() {
                   )}
                 </div>
 
-                {/* Card content - clickable */}
-                <Link href={`/app/${org.slug}`} className="block p-6 flex-1 flex flex-col justify-between h-full">
+                {/* Card content (visual layer; non-interactive except explicit buttons) */}
+                <div className="relative z-10 p-6 flex-1 flex flex-col justify-between h-full pointer-events-none">
                   <div>
                     <div className="flex items-start gap-4 mb-4">
                       {org.logo ? (
@@ -451,7 +544,7 @@ export default function AppDashboard() {
                             e.stopPropagation();
                             handleCopyCode(org.slug, org.id);
                           }}
-                          className="group/code flex items-center gap-1.5 mt-1 text-sm text-[#8a5d33] font-mono tracking-wider hover:text-[#8B0000] transition-colors text-left cursor-pointer"
+                          className="pointer-events-auto group/code flex items-center gap-1.5 mt-1 text-sm text-[#8a5d33] font-mono tracking-wider hover:text-[#8B0000] transition-colors text-left cursor-pointer"
                           title="Copy code"
                         >
                           <span className="truncate">{org.slug}</span>
@@ -484,18 +577,18 @@ export default function AppDashboard() {
                       <Users className="w-4 h-4" />
                       <span>{org.memberCount} {org.memberCount === 1 ? "member" : "members"}</span>
                     </div>
-                    <span className="inline-flex items-center gap-1 text-sm font-bold text-[#8B0000] uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity translate-x-2 group-hover:translate-x-0">
+                    <span className={`inline-flex items-center gap-1 text-sm font-bold text-[#8B0000] uppercase tracking-wider transition-opacity translate-x-2 group-hover:translate-x-0 ${openMenuId === org.id ? "opacity-0" : "opacity-0 group-hover:opacity-100"}`}>
                       Open <ArrowRight className="w-4 h-4" />
                     </span>
                   </div>
-                </Link>
+                </div>
               </div>
             ))}
 
             {/* + New Organization Card */}
             <button
               onClick={handleOpenCreateModal}
-              className="group bg-white/50 border-2 border-dashed border-amber-500/25 rounded-2xl p-6 flex flex-col items-center justify-center min-h-[200px] hover:border-[#8B0000]/30 hover:bg-[#8B0000]/[0.02] transition-all cursor-pointer"
+              className="group bg-white/35 backdrop-blur-sm border-2 border-dashed border-white/70 rounded-2xl p-6 flex flex-col items-center justify-center min-h-[200px] hover:border-[#8B0000]/30 hover:bg-white/55 transition-all cursor-pointer"
             >
               <div className="w-14 h-14 bg-[#8B0000]/10 rounded-xl flex items-center justify-center mb-4 group-hover:bg-[#8B0000]/15 group-hover:scale-110 transition-all">
                 <Plus className="w-7 h-7 text-[#8B0000]" />
@@ -526,7 +619,7 @@ export default function AppDashboard() {
             {pendingRequests.map((req) => (
               <div
                 key={req.requestId}
-                className={`relative bg-white border rounded-2xl shadow-sm p-6 flex flex-col ${
+                className={`relative bg-white/55 backdrop-blur-md border rounded-2xl shadow-md shadow-amber-900/10 p-6 flex flex-col ${
                   req.status === "denied" ? "border-red-200 bg-red-50/30" : "border-amber-500/20"
                 }`}
               >
@@ -584,7 +677,7 @@ export default function AppDashboard() {
           ].map((item, idx) => (
             <div
               key={idx}
-              className="group bg-white border border-amber-500/20 rounded-2xl p-6 shadow-sm hover:shadow-lg hover:border-amber-500/40 hover:-translate-y-1 transition-all cursor-pointer"
+              className="group bg-white/58 backdrop-blur-md border border-white/60 rounded-2xl p-6 shadow-md shadow-amber-900/10 hover:shadow-lg hover:border-amber-200/80 hover:-translate-y-1 transition-all cursor-pointer"
             >
               <div className={`${item.color} w-12 h-12 rounded-xl flex items-center justify-center text-white mb-5 shadow-md group-hover:scale-110 transition-transform`}>
                 {item.icon}
@@ -594,6 +687,12 @@ export default function AppDashboard() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div aria-hidden className="pointer-events-none select-none pt-8 pb-14 overflow-hidden">
+        <p className="text-[clamp(2.5rem,17vw,8rem)] leading-none font-black tracking-tight text-center bg-linear-to-b from-white/95 to-white/20 bg-clip-text text-transparent">
+          QuantWarden
+        </p>
       </div>
 
       {/* Create Organization Modal */}
@@ -902,6 +1001,38 @@ export default function AppDashboard() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      </div>
+
+      {creating && (
+        <div className="fixed inset-0 z-9999 pointer-events-auto">
+          <div className="absolute inset-0 bg-white/50 backdrop-blur-[1px] animate-in fade-in duration-200" />
+
+          <div className="absolute top-0 left-0 right-0 h-0.75 overflow-hidden">
+            <div
+              className="h-full bg-linear-to-r from-transparent via-[#8B0000] to-transparent"
+              style={{
+                width: "40%",
+                animation: "nav-progress-slide 0.8s ease-in-out infinite",
+              }}
+            />
+          </div>
+
+          <div className="absolute inset-0 flex items-center justify-center sm:hidden">
+            <div className="bg-white/90 border border-amber-500/20 rounded-2xl p-6 shadow-2xl flex flex-col items-center gap-3">
+              <Loader2 className="w-8 h-8 animate-spin text-[#8B0000]" />
+              <span className="text-sm font-bold text-[#3d200a]">Creating organization...</span>
+            </div>
+          </div>
+
+          <style>{`
+            @keyframes nav-progress-slide {
+              0% { transform: translateX(-100%); }
+              100% { transform: translateX(350%); }
+            }
+          `}</style>
         </div>
       )}
     </div>

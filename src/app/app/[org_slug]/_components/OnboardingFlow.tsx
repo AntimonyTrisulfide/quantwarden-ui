@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Loader2, ArrowRight, ArrowLeft, Globe, Lock, Search, EyeOff, Plus, Trash2, Mail, Check, Copy, Info, ChevronDown, Send, XCircle, CheckCircle2, Clock } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Loader2, ArrowRight, ArrowLeft, Globe, Lock, Search, EyeOff, Plus, Trash2, Mail, Check, Copy, Info, ChevronDown, ChevronLeft, ChevronRight, Send, XCircle, CheckCircle2, Clock } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 // Custom Dropdown Component for fully color-coded options
@@ -65,10 +65,45 @@ function RoleDropdown({
   );
 }
 
+function PermissionCheckbox({
+  checked,
+  disabled,
+  onToggle,
+  label,
+}: {
+  checked: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={checked}
+      disabled={disabled}
+      onClick={onToggle}
+      className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all ${
+        disabled
+          ? checked
+            ? "bg-stone-200 border-stone-300 text-white/90 cursor-not-allowed"
+            : "bg-white/35 border-amber-500/20 text-transparent cursor-not-allowed"
+          : checked
+          ? "bg-[#8B0000] border-[#8B0000] text-white shadow-md shadow-[#8B0000]/25 hover:bg-[#730000]"
+          : "bg-white/75 border-amber-500/35 text-transparent hover:bg-white hover:border-[#8B0000]/45"
+      }`}
+    >
+      <Check className="w-4 h-4" />
+    </button>
+  );
+}
+
 export default function OnboardingFlow({ org }: { org: any }) {
   const [step, setStep] = useState(1);
   const [maxUnlockedStep, setMaxUnlockedStep] = useState(1);
+  const [showHeaderNotch, setShowHeaderNotch] = useState(false);
   const router = useRouter();
+  const progressHeaderRef = useRef<HTMLDivElement | null>(null);
 
   // Load from local storage securely on client side mount
   useEffect(() => {
@@ -118,6 +153,41 @@ export default function OnboardingFlow({ org }: { org: any }) {
       fetchSent();
     }
   }, [step, org.id]);
+
+  useEffect(() => {
+    const node = progressHeaderRef.current;
+    if (!node) return;
+
+    let rafId: number | null = null;
+    const SHOW_AT = 96;
+    const HIDE_AT = 126;
+
+    const evaluateNotchVisibility = () => {
+      rafId = null;
+      const { bottom } = node.getBoundingClientRect();
+
+      setShowHeaderNotch((prev) => {
+        if (!prev && bottom <= SHOW_AT) return true;
+        if (prev && bottom >= HIDE_AT) return false;
+        return prev;
+      });
+    };
+
+    const onScrollOrResize = () => {
+      if (rafId !== null) return;
+      rafId = window.requestAnimationFrame(evaluateNotchVisibility);
+    };
+
+    evaluateNotchVisibility();
+    window.addEventListener("scroll", onScrollOrResize, { passive: true });
+    window.addEventListener("resize", onScrollOrResize);
+
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize);
+      window.removeEventListener("resize", onScrollOrResize);
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+    };
+  }, []);
 
   // Step 3 State
   const defaultRoles = [
@@ -353,40 +423,123 @@ export default function OnboardingFlow({ org }: { org: any }) {
   };
 
   return (
-    <div className="max-w-2xl mx-auto py-10">
+    <div className="relative min-h-screen">
+      <div
+        aria-hidden
+        className="fixed inset-0 z-0 pointer-events-none bg-[linear-gradient(160deg,#fff7e6_0%,#fde68a_35%,#fbbf24_65%,#f59e0b_100%)]"
+      />
+
+      <div
+        aria-hidden={!showHeaderNotch}
+        className={`fixed top-8 left-1/2 -translate-x-1/2 -translate-y-1/2 z-60 origin-top bg-[#8B0000]/95 backdrop-blur-md rounded-[999px] border border-white/20 px-5 py-2.5 w-[min(380px,calc(100vw-32px))] transition-[opacity,transform,filter] duration-380 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-[opacity,transform,filter] ${
+          showHeaderNotch ? "opacity-100 scale-100 blur-0 pointer-events-auto" : "opacity-0 scale-108 blur-[1.5px] pointer-events-none"
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => step > 1 && navigateToStep(step - 1)}
+          disabled={step <= 1}
+          className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full border border-transparent bg-transparent text-white/85 flex items-center justify-center transition-all hover:bg-white/18 hover:border-white/35 disabled:opacity-35 disabled:cursor-not-allowed"
+          aria-label="Previous step"
+        >
+          <ChevronLeft className="w-6 h-6" />
+        </button>
+
+        <p className="text-center text-[10px] font-extrabold tracking-[0.14em] uppercase text-white/95">Organization Setup</p>
+        <div className="flex items-center justify-center gap-1 mt-1.5">
+          {[1, 2, 3, 4].map((num) => (
+            <div key={`notch-${num}`} className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => num <= maxUnlockedStep && navigateToStep(num)}
+                disabled={num > maxUnlockedStep}
+                className={`w-3 h-3 rounded-full border ${
+                  step >= num ? "bg-white border-white" : "bg-white/20 border-white/35"
+                } transition-all ${
+                  num <= maxUnlockedStep ? "cursor-pointer hover:scale-110" : "cursor-not-allowed opacity-60"
+                }`}
+                aria-label={`Go to step ${num}`}
+              >
+                <span className="sr-only">Step {num}</span>
+              </button>
+              {num < 4 && (
+                <span className={`h-0.5 w-3 rounded-full ${step > num ? "bg-white/80" : "bg-white/25"}`} />
+              )}
+            </div>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => step < maxUnlockedStep && navigateToStep(step + 1)}
+          disabled={step >= maxUnlockedStep}
+          className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full border border-transparent bg-transparent text-white/85 flex items-center justify-center transition-all hover:bg-white/18 hover:border-white/35 disabled:opacity-35 disabled:cursor-not-allowed"
+          aria-label="Next step"
+        >
+          <ChevronRight className="w-6 h-6" />
+        </button>
+      </div>
+
+      <div className="relative z-10 max-w-2xl mx-auto py-10">
       {/* Progress Header */}
-      <div className="mb-10 text-center">
-        <h1 className="text-3xl font-black text-[#3d200a] mb-2 tracking-tight">Organization Setup</h1>
+      <div ref={progressHeaderRef} className="mb-10 text-center">
+        <h1 className="text-3xl font-black text-[#8B0000] mb-2 tracking-tight">Organization Setup</h1>
         <p className="text-[#8a5d33] font-medium">Configure {org.name} to get started</p>
         
-        <div className="flex items-center justify-center gap-4 mt-8">
+        <div className="flex items-center justify-center gap-9 mt-8">
+          <button
+            type="button"
+            onClick={() => step > 1 && navigateToStep(step - 1)}
+            disabled={step <= 1}
+            className="w-9 h-9 rounded-full border border-transparent bg-transparent text-[#8B0000] flex items-center justify-center transition-all hover:bg-white/45 hover:border-white/60 disabled:opacity-45 disabled:cursor-not-allowed"
+            aria-label="Previous step"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+
+          <div className="flex items-center">
           {[1, 2, 3, 4].map((num) => (
-            <div key={num} className="flex items-center gap-4">
+            <div key={num} className={`relative ${num < 4 ? "mr-7" : ""}`}>
               <button
                 type="button"
                 onClick={() => {
                   if (num <= maxUnlockedStep) navigateToStep(num);
                 }}
                 disabled={num > maxUnlockedStep}
-                className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm transition-all focus:outline-none ${
+                className={`relative z-10 w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm transition-all focus:outline-none ${
                   step === num
-                    ? "bg-[#8B0000] text-white shadow-md shadow-[#8B0000]/20 scale-110"
+                    ? "bg-[#8B0000]/88 backdrop-blur-sm text-white shadow-md shadow-[#8B0000]/30 ring-1 ring-white/30 scale-110"
                     : step > num
-                    ? "bg-amber-500/20 text-[#8B0000] border border-amber-500/30"
-                    : "bg-white border border-amber-500/20 text-[#8a5d33]/50"
+                    ? "bg-[#8B0000] text-white border border-[#8B0000] shadow-sm shadow-[#8B0000]/25"
+                    : "bg-white/22 backdrop-blur-sm border border-white/45 text-[#8a5d33]/65"
                 } ${num <= maxUnlockedStep ? "cursor-pointer hover:ring-2 hover:ring-amber-500/40" : "cursor-not-allowed opacity-60"}`}
               >
                 {step > num ? <Check className="w-4 h-4" /> : num}
               </button>
               {num < 4 && (
-                <div className={`h-1 w-8 sm:w-12 rounded-full transition-all ${step > num ? "bg-amber-500/30" : "bg-amber-500/10"}`} />
+                <span
+                  className={`absolute top-1/2 left-full -translate-y-1/2 -ml-1 h-1.5 w-8 rounded-full transition-all ${
+                    step > num ? "bg-[#8B0000]/65" : "bg-amber-500/18"
+                  }`}
+                />
               )}
             </div>
           ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => step < 4 && navigateToStep(step + 1)}
+            disabled={step >= 4}
+            className="w-9 h-9 rounded-full border border-transparent bg-transparent text-[#8B0000] flex items-center justify-center transition-all hover:bg-white/45 hover:border-white/60 disabled:opacity-45 disabled:cursor-not-allowed"
+            aria-label="Next step"
+          >
+            <ArrowRight className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      <div className="bg-white border border-amber-500/20 rounded-2xl shadow-xl shadow-amber-500/5 overflow-hidden">
+      <div className="bg-white/50 backdrop-blur-xl border border-white/65 rounded-2xl shadow-2xl shadow-amber-900/15 overflow-hidden">
         {error && (
           <div className="bg-red-50 border-b border-red-200 text-red-600 px-6 py-3 text-sm font-medium flex items-center gap-2">
             {error}
@@ -404,8 +557,8 @@ export default function OnboardingFlow({ org }: { org: any }) {
                     onClick={() => handleVisibilityChange("hidden")}
                     className={`flex flex-col items-start p-5 rounded-xl border-2 transition-all text-left ${
                       visibility === "hidden"
-                        ? "border-[#8B0000] bg-[#8B0000]/5 shadow-sm"
-                        : "border-amber-500/20 hover:border-amber-500/40 bg-white"
+                        ? "border-[#8B0000]/80 bg-[#8B0000]/12 shadow-md shadow-[#8B0000]/15 ring-1 ring-[#8B0000]/20"
+                        : "border-amber-500/18 hover:border-amber-500/35 bg-transparent hover:bg-white/25"
                     }`}
                   >
                     <div className="flex items-center gap-2 mb-2 font-bold text-[#3d200a]">
@@ -420,8 +573,8 @@ export default function OnboardingFlow({ org }: { org: any }) {
                     onClick={() => handleVisibilityChange("public")}
                     className={`flex flex-col items-start p-5 rounded-xl border-2 transition-all text-left ${
                       visibility === "public"
-                        ? "border-[#8B0000] bg-[#8B0000]/5 shadow-sm"
-                        : "border-amber-500/20 hover:border-amber-500/40 bg-white"
+                        ? "border-[#8B0000]/80 bg-[#8B0000]/12 shadow-md shadow-[#8B0000]/15 ring-1 ring-[#8B0000]/20"
+                        : "border-amber-500/18 hover:border-amber-500/35 bg-transparent hover:bg-white/25"
                     }`}
                   >
                     <div className="flex items-center gap-2 mb-2 font-bold text-[#3d200a]">
@@ -441,8 +594,8 @@ export default function OnboardingFlow({ org }: { org: any }) {
                     onClick={() => handleApprovalChange("private")}
                     className={`flex flex-col items-start p-5 rounded-xl border-2 transition-all text-left ${
                       approval === "private"
-                        ? "border-[#8B0000] bg-[#8B0000]/5 shadow-sm"
-                        : "border-amber-500/20 hover:border-amber-500/40 bg-white"
+                        ? "border-[#8B0000]/80 bg-[#8B0000]/12 shadow-md shadow-[#8B0000]/15 ring-1 ring-[#8B0000]/20"
+                        : "border-amber-500/18 hover:border-amber-500/35 bg-transparent hover:bg-white/25"
                     }`}
                   >
                     <div className="flex items-center gap-2 mb-2 font-bold text-[#3d200a]">
@@ -457,8 +610,8 @@ export default function OnboardingFlow({ org }: { org: any }) {
                     onClick={() => handleApprovalChange("public")}
                     className={`flex flex-col items-start p-5 rounded-xl border-2 transition-all text-left ${
                       approval === "public"
-                        ? "border-[#8B0000] bg-[#8B0000]/5 shadow-sm"
-                        : "border-amber-500/20 hover:border-amber-500/40 bg-white"
+                        ? "border-[#8B0000]/80 bg-[#8B0000]/12 shadow-md shadow-[#8B0000]/15 ring-1 ring-[#8B0000]/20"
+                        : "border-amber-500/18 hover:border-amber-500/35 bg-transparent hover:bg-white/25"
                     }`}
                   >
                     <div className="flex items-center gap-2 mb-2 font-bold text-[#3d200a]">
@@ -602,30 +755,27 @@ export default function OnboardingFlow({ org }: { org: any }) {
                           )}
                         </td>
                         <td className="py-3 px-4 text-center">
-                          <input 
-                            type="checkbox" 
-                            checked={r.permissions.team} 
+                          <PermissionCheckbox
+                            checked={r.permissions.team}
                             disabled={r.locked.includes("team")}
-                            onChange={() => handleTogglePermission(r.id, "team")}
-                            className="w-4 h-4 accent-[#8B0000] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                            onToggle={() => handleTogglePermission(r.id, "team")}
+                            label={`${r.name} team management permission`}
                           />
                         </td>
                         <td className="py-3 px-4 text-center">
-                          <input 
-                            type="checkbox" 
-                            checked={r.permissions.scan} 
+                          <PermissionCheckbox
+                            checked={r.permissions.scan}
                             disabled={r.locked.includes("scan")}
-                            onChange={() => handleTogglePermission(r.id, "scan")}
-                            className="w-4 h-4 accent-[#8B0000] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                            onToggle={() => handleTogglePermission(r.id, "scan")}
+                            label={`${r.name} scan configuration permission`}
                           />
                         </td>
                         <td className="py-3 px-4 text-center">
-                          <input 
-                            type="checkbox" 
-                            checked={r.permissions.asset} 
+                          <PermissionCheckbox
+                            checked={r.permissions.asset}
                             disabled={r.locked.includes("asset")}
-                            onChange={() => handleTogglePermission(r.id, "asset")}
-                            className="w-4 h-4 accent-[#8B0000] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                            onToggle={() => handleTogglePermission(r.id, "asset")}
+                            label={`${r.name} asset management permission`}
                           />
                         </td>
                         <td className="py-3 px-4 text-right">
@@ -685,7 +835,7 @@ export default function OnboardingFlow({ org }: { org: any }) {
 
               {invites.length > 0 && (
                 <div className="space-y-4 animate-in fade-in zoom-in-95 duration-300">
-                  <div className="border border-amber-500/20 rounded-xl bg-white shadow-sm mt-4 overflow-hidden">
+                  <div className="border border-amber-500/20 rounded-xl bg-white shadow-sm mt-4 overflow-visible">
                     <table className="w-full text-left font-medium">
                       <thead className="bg-[#fdf1df]">
                         <tr>
@@ -825,7 +975,7 @@ export default function OnboardingFlow({ org }: { org: any }) {
         </div>
 
         {/* Footer Navigation */}
-        <div className="bg-[#fdf8f0] border-t border-amber-500/15 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="bg-white/20 backdrop-blur-xl border-t border-white/35 p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center justify-center sm:justify-start gap-4 w-full sm:w-auto">
             <button
               onClick={() => step > 1 ? navigateToStep(step - 1) : router.push("/app")}
@@ -835,14 +985,14 @@ export default function OnboardingFlow({ org }: { org: any }) {
             </button>
 
             {/* Desktop Auto-save indicator */}
-            <div className="hidden sm:flex items-center gap-2 text-sm font-medium transition-opacity duration-300 w-24">
+            <div className="hidden sm:flex items-center gap-2 text-sm font-medium transition-opacity duration-300 w-32">
               {autoSaveStatus === "saving" && (
-                <span className="flex items-center gap-1.5 text-[#8a5d33]">
+                <span className="flex items-center gap-1.5 text-[#8a5d33] whitespace-nowrap">
                   <Loader2 className="w-4 h-4 animate-spin" /> Saving...
                 </span>
               )}
               {autoSaveStatus === "saved" && (
-                <span className="flex items-center gap-1.5 text-emerald-600 animate-in fade-in zoom-in duration-300">
+                <span className="flex items-center gap-1.5 text-emerald-600 animate-in fade-in zoom-in duration-300 whitespace-nowrap">
                   <Check className="w-4 h-4" /> Auto-saved
                 </span>
               )}
@@ -873,17 +1023,18 @@ export default function OnboardingFlow({ org }: { org: any }) {
           {/* Mobile Auto-save indicator */}
           <div className="sm:hidden flex items-center justify-center gap-2 text-sm font-medium h-6 mt-2">
             {autoSaveStatus === "saving" && (
-              <span className="flex items-center gap-1.5 text-[#8a5d33]">
+              <span className="flex items-center gap-1.5 text-[#8a5d33] whitespace-nowrap">
                 <Loader2 className="w-4 h-4 animate-spin" /> Saving...
               </span>
             )}
             {autoSaveStatus === "saved" && (
-              <span className="flex items-center gap-1.5 text-emerald-600 animate-in fade-in zoom-in duration-300">
+              <span className="flex items-center gap-1.5 text-emerald-600 animate-in fade-in zoom-in duration-300 whitespace-nowrap">
                 <Check className="w-4 h-4" /> Auto-saved
               </span>
             )}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

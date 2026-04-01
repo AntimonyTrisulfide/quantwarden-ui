@@ -1,0 +1,70 @@
+import { redirect } from "next/navigation";
+import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { headers } from "next/headers";
+import AssetIntelligenceClient from "./_components/AssetIntelligenceClient";
+
+export default async function AssetIntelligencePage({ params }: { params: Promise<{ org_slug: string, asset_id: string }> | { org_slug: string, asset_id: string } }) {
+  // Await params for Next.js async params API
+  const resolvedParams = await params;
+  
+  const session = await auth.api.getSession({ headers: await headers() });
+  if (!session?.user) redirect("/auth/sign-in");
+
+  const orgRows = await prisma.$queryRawUnsafe<{ id: string, name: string, slug: string }[]>(
+     `SELECT id, name, slug FROM "organization" WHERE "slug" = $1 LIMIT 1`, resolvedParams.org_slug
+  );
+  if (orgRows.length === 0) redirect("/app");
+  const org = orgRows[0];
+
+  const memberRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
+    `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
+    org.id,
+    session.user.id
+  );
+  if (memberRows.length === 0) redirect("/app");
+  const isAdmin = memberRows[0].role === "owner" || memberRows[0].role === "admin";
+
+  // Check if it's a UUID/CUID structure (broad match for alphanumeric IDs vs domains)
+  // CUIDs and UUIDs lack dots, domains have dots.
+  const isId = !resolvedParams.asset_id.includes(".");
+  
+  let assetRows;
+  if (isId) {
+    assetRows = await prisma.$queryRawUnsafe<any[]>(
+       `SELECT * FROM "asset" WHERE "id" = $1 AND "organizationId" = $2 LIMIT 1`,
+       resolvedParams.asset_id, org.id
+    );
+  } else {
+    const decodedValue = decodeURIComponent(resolvedParams.asset_id);
+    assetRows = await prisma.$queryRawUnsafe<any[]>(
+       `SELECT * FROM "asset" WHERE "value" = $1 AND "organizationId" = $2 LIMIT 1`,
+       decodedValue, org.id
+    );
+  }
+  if (assetRows.length === 0) redirect(`/app/${org.slug}`);
+  const asset = assetRows[0];
+
+  const scanRows = await prisma.$queryRawUnsafe<any[]>(
+     `SELECT * FROM "asset_scan" WHERE "assetId" = $1 ORDER BY "completedAt" DESC`,
+     asset.id
+  );
+
+  return (
+      <div className="relative isolate min-h-screen">
+         <div
+            aria-hidden
+            className="fixed inset-0 z-0 pointer-events-none bg-[linear-gradient(160deg,#fff7e6_0%,#fde68a_35%,#fbbf24_65%,#f59e0b_100%)]"
+         />
+
+         <div className="relative z-10 min-h-screen overflow-y-auto">
+            <AssetIntelligenceClient 
+               org={org} 
+               asset={asset} 
+               initialScans={scanRows}
+               isAdmin={isAdmin}
+            />
+         </div>
+    </div>
+  );
+}

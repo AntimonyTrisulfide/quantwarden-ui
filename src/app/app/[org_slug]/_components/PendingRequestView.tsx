@@ -36,15 +36,21 @@ export default function PendingRequestView({ org, request }: PendingRequestViewP
   const isDenied = request.status === "denied";
 
   return (
-    <div className="max-w-lg mx-auto py-16">
-      <Link
-        href="/app"
-        className="flex items-center gap-2 text-[#8a5d33] font-bold text-sm mb-8 hover:text-[#8B0000] transition-colors"
-      >
-        <ArrowLeft className="w-4 h-4" /> Back to Dashboard
-      </Link>
+    <div className="relative isolate min-h-screen">
+      <div
+        aria-hidden
+        className="fixed inset-0 z-0 pointer-events-none bg-[linear-gradient(160deg,#fff7e6_0%,#fde68a_35%,#fbbf24_65%,#f59e0b_100%)]"
+      />
 
-      <div className="bg-white border border-amber-500/20 rounded-2xl shadow-xl shadow-amber-500/5 overflow-hidden">
+      <div className="relative z-10 max-w-lg mx-auto py-16">
+        <Link
+          href="/app"
+          className="flex items-center gap-2 text-[#8a5d33] font-bold text-sm mb-8 hover:text-[#8B0000] transition-colors"
+        >
+          <ArrowLeft className="w-4 h-4" /> Back to Dashboard
+        </Link>
+
+        <div className="bg-white border border-amber-500/20 rounded-2xl shadow-xl shadow-amber-500/5 overflow-hidden">
         {/* Header */}
         <div className={`px-8 py-8 text-center ${isDenied ? "bg-red-600" : "bg-[#8B0000]"}`}>
           <div className={`w-16 h-16 ${isDenied ? "bg-white/20" : "bg-white/15"} rounded-2xl flex items-center justify-center mx-auto mb-4`}>
@@ -130,6 +136,7 @@ export default function PendingRequestView({ org, request }: PendingRequestViewP
               )}
             </button>
           </div>
+        </div>
         </div>
       </div>
     </div>

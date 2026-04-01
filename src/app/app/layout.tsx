@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { useSession, signOut } from "@/lib/auth-client";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { Shield, LogOut, User, Mail, ChevronDown, Loader2 } from "lucide-react";
+import { Shield, LogOut, User, Mail, ChevronDown, Loader2, PencilLine } from "lucide-react";
 import NavigationProgress from "@/components/ui/navigation-progress";
 import {
   DropdownMenu,
@@ -52,7 +52,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </Suspense>
       {/* Top Navigation Bar */}
       <nav className="fixed top-0 left-0 right-0 z-50 w-full bg-white/80 backdrop-blur-lg border-b border-amber-500/15 shadow-sm">
-        <div className="max-w-[1440px] mx-auto px-6 sm:px-8 h-16 flex items-center justify-between">
+        <div className="max-w-360 mx-auto px-6 sm:px-8 h-16 flex items-center justify-between">
           {/* Left: Logo */}
           <Link href="/app" className="flex items-center gap-2.5 group">
             <div className="w-9 h-9 bg-[#8B0000] rounded-lg flex items-center justify-center shadow-md shadow-[#8B0000]/20 group-hover:shadow-lg group-hover:shadow-[#8B0000]/30 transition-all">
@@ -109,6 +109,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                       <p className="font-semibold text-[#3d200a]">{user?.email ?? "—"}</p>
                     </div>
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => router.push("/app/user-profile")}
+                    className="gap-3 bg-[#8B0000] text-white focus:bg-[#730000] focus:text-white"
+                  >
+                    <PencilLine className="w-4 h-4 text-white" />
+                    <span className="font-semibold text-white">Manage profile</span>
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     onClick={handleLogout}
@@ -125,7 +132,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </nav>
 
       {/* Main Content */}
-      <main className="max-w-[1440px] mx-auto px-6 sm:px-8 py-8 pt-24">
+      <main className="max-w-360 mx-auto px-6 sm:px-8 py-8 pt-24">
         {children}
       </main>
     </div>

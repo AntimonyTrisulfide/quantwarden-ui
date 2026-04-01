@@ -104,6 +104,7 @@ model Organization {
   invitations  Invitation[]
   roles        Role[]
   assets       Asset[]
+  nmapAssets   NmapAsset[]
   joinRequests JoinRequest[]
 
   @@unique([slug])
@@ -202,4 +203,33 @@ model AssetScan {
 
   @@index([assetId])
   @@map("asset_scan")
+}
+
+model NmapAsset {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  target         String       // The domain or IP added by the user
+  resolvedIp     String?      // The resolved IP address populated after scanning
+  scanStatus     String       @default("idle") // idle, scanning, completed, failed
+  lastScanDate   DateTime?
+  scans          NmapAssetScan[]
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, target])
+  @@index([organizationId])
+  @@map("nmap_asset")
+}
+
+model NmapAssetScan {
+  id          String   @id @default(cuid())
+  assetId     String
+  asset       NmapAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  status      String   @default("pending") // pending, completed, failed
+  resultData  String?  // JSON text payload from the nmap API response
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([assetId])
+  @@map("nmap_asset_scan")
 }

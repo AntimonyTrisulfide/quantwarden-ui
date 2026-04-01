@@ -39,7 +39,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     // We only serve the full payload if the auth email matches
     if (inviteQuery.email.toLowerCase() !== authEmail.toLowerCase()) {
-      return NextResponse.json({ error: "Email mismatch" }, { status: 403 });
+      return NextResponse.json({ error: "This invitation is for someone else." }, { status: 403 });
     }
 
     // Attempt to lookup the precise roleName if it exists
