@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
            FROM "asset_scan" s
            WHERE s."assetId" = a.id
              AND s.type = 'openssl'
+             AND s.status IN ('completed', 'failed')
            ORDER BY
              COALESCE(s."completedAt", s."createdAt") DESC,
              s."createdAt" DESC

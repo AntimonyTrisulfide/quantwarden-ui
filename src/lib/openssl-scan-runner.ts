@@ -21,6 +21,52 @@ export interface RunOpenSSLScanItemResult {
   error?: string;
 }
 
+type OpenSSLErrorKind = "request_timeout" | "service_unavailable" | "other";
+
+function classifyOpenSSLError(error: unknown): OpenSSLErrorKind {
+  const message = String((error as any)?.message || error || "").toLowerCase();
+  const name = String((error as any)?.name || "").toLowerCase();
+  if (!message && !name) return "other";
+
+  if (
+    name === "aborterror" ||
+    message.includes("aborterror") ||
+    message.includes("aborted") ||
+    message.includes("etimedout") ||
+    message.includes("timed out") ||
+    message.includes("timeout")
+  ) {
+    return "request_timeout";
+  }
+
+  if (
+    [
+      "econnrefused",
+      "fetch failed",
+      "network",
+      "503",
+      "502",
+      "gateway",
+      "service unavailable",
+      "connection refused",
+      "socket hang up",
+      "enotfound",
+    ].some((needle) => message.includes(needle))
+  ) {
+    return "service_unavailable";
+  }
+
+  return "other";
+}
+
+export function isOpenSSLServiceUnavailableError(error: unknown) {
+  return classifyOpenSSLError(error) === "service_unavailable";
+}
+
+export function isOpenSSLRequestTimeoutError(error: unknown) {
+  return classifyOpenSSLError(error) === "request_timeout";
+}
+
 async function loadOpenSSLScanContext(input: RunOpenSSLScanItemInput): Promise<OpenSSLScanContext | null> {
   const rows = await prisma.$queryRawUnsafe<OpenSSLScanContext[]>(
     `SELECT a.value, a.type
@@ -70,6 +116,21 @@ async function markScanFailure(input: RunOpenSSLScanItemInput, failurePayload: s
   await refreshScanBatch(input.batchId);
 }
 
+async function markScanDeferred(input: RunOpenSSLScanItemInput, reason: string) {
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRawUnsafe(
+      `UPDATE "asset_scan"
+       SET status = 'pending', "resultData" = $1, "completedAt" = NULL
+       WHERE id = $2
+         AND status = 'running'`,
+      JSON.stringify({ error: reason, transient: true }),
+      input.scanId
+    );
+  });
+
+  await refreshScanBatch(input.batchId);
+}
+
 export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promise<RunOpenSSLScanItemResult> {
   const asset = await loadOpenSSLScanContext(input);
 
@@ -103,8 +164,12 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
     const probeBatchSize = Number.isFinite(parsedBatchSize)
       ? Math.min(50, Math.max(1, parsedBatchSize))
       : 10;
+    const parsedRequestTimeoutMs = Number.parseInt(process.env.OPENSSL_API_REQUEST_TIMEOUT_MS || "", 10);
+    const requestTimeoutMs = Number.isFinite(parsedRequestTimeoutMs)
+      ? Math.min(120000, Math.max(2000, parsedRequestTimeoutMs))
+      : Math.min(10000, Math.max(3000, timeoutSeconds * 1000 + 1000));
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
 
     const response = await fetch(`${opensslUrl}/api/v1/openssl-profile`, {
       method: "POST",
@@ -129,6 +194,18 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
     } catch {}
 
     if (!response.ok) {
+      const infrastructureError = response.status >= 500;
+      const inferredError = typeof (parsed as any)?.error === "string"
+        ? (parsed as any).error
+        : (rawResult || `OpenSSL scan failed with status ${response.status}.`);
+
+      if (infrastructureError) {
+        await markScanDeferred(input, `OpenSSL service unavailable (${response.status}). ${inferredError}`);
+        const unavailableError = new Error(`OpenSSL service unavailable (${response.status})`);
+        (unavailableError as any).opensslErrorKind = "service_unavailable";
+        throw unavailableError;
+      }
+
       const failurePayload = typeof parsed === "object" && parsed !== null
         ? JSON.stringify(parsed)
         : JSON.stringify({ error: rawResult || "OpenSSL scan failed." });
@@ -191,6 +268,35 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
       data: parsed,
     };
   } catch (error: any) {
+    const errorKind = classifyOpenSSLError(error);
+
+    if (errorKind === "request_timeout") {
+      const failurePayload = JSON.stringify({
+        error: "OpenSSL request timeout. Possibly port not open or target not responding.",
+        timeout: true,
+      });
+
+      await markScanFailure(input, failurePayload);
+
+      return {
+        scanId: input.scanId,
+        status: "failed",
+        error: "OpenSSL request timeout. Possibly port not open or target not responding.",
+      };
+    }
+
+    if (errorKind === "service_unavailable") {
+      await markScanDeferred(
+        input,
+        error?.message || "OpenSSL service unavailable. Scan deferred for retry."
+      );
+
+      if (!(error as any)?.opensslErrorKind) {
+        (error as any).opensslErrorKind = errorKind;
+      }
+      throw error;
+    }
+
     const failurePayload = JSON.stringify({
       error: error?.name === "AbortError"
         ? "OpenSSL scan timed out before the target completed negotiation."

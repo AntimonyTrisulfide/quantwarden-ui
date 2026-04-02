@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
 import {
   Activity,
@@ -381,11 +381,14 @@ export default function ScanActivityMonitor({
   const [openHistoryBatchId, setOpenHistoryBatchId] = useState<string | null>(null);
   const [isHeaderCompact, setIsHeaderCompact] = useState(false);
   const [hideHeaderActions, setHideHeaderActions] = useState(false);
+  const [isServiceWarningSticky, setIsServiceWarningSticky] = useState(false);
   const modalScrollRef = useRef<HTMLDivElement | null>(null);
+  const warningProgressBaselineRef = useRef<{ key: string; score: number } | null>(null);
   const {
     activity,
     loading,
     error,
+    serviceUnavailableRemainingSeconds,
     lastSyncAt,
     checkingConnection,
     streamStatus,
@@ -393,6 +396,7 @@ export default function ScanActivityMonitor({
     openMonitor,
     closeMonitor,
     startActivityMonitor,
+    refreshActivity,
     cancelBatch,
   } = useScanActivity(orgId, {
     orgSlug,
@@ -419,7 +423,7 @@ export default function ScanActivityMonitor({
       ? "error"
       : "idle";
   const canStart = miniStreamStatus !== "connecting" && miniStreamStatus !== "connected";
-  const canStop = canScan && streamStatus === "connected" && Boolean(activeBatch);
+  const canStop = canScan && Boolean(activeBatch);
   const streamChip = streamChipTone(streamStatus);
   const miniStreamChip = streamChipTone(miniStreamStatus);
   const cardStateLabel = activity?.lock.active
@@ -456,6 +460,41 @@ export default function ScanActivityMonitor({
   const headerActionsHideExit = 26;
   const headerCompactEnter = 104;
   const headerCompactExit = 52;
+  const outageSignalActive = Boolean(
+    error && /openssl scanning endpoint appears unavailable|service unavailable|may stall/i.test(error)
+  );
+  const streamOutageLikely =
+    streamStatus === "error" &&
+    (Boolean(activity?.lock.active) || hasActiveSharedScan || Boolean(activeBatch));
+  const progressMarker = useMemo(() => {
+    const progressBatch = activity?.activeBatches[0] || activity?.latestBatch || null;
+    if (progressBatch) {
+      return {
+        key: `batch:${progressBatch.id}`,
+        score: progressBatch.completedAssets + progressBatch.failedAssets + (progressBatch.percentComplete / 1000),
+      };
+    }
+
+    if (activity?.lock.batchId) {
+      return {
+        key: `lock:${activity.lock.batchId}`,
+        score: activity.lock.percentComplete / 1000,
+      };
+    }
+
+    return {
+      key: "none",
+      score: 0,
+    };
+  }, [activity]);
+  const hasServiceUnavailableCountdown = Number.isFinite(serviceUnavailableRemainingSeconds);
+  const serviceUnavailableCountdownSeconds = hasServiceUnavailableCountdown
+    ? Math.max(0, Math.ceil(serviceUnavailableRemainingSeconds as number))
+    : null;
+  const showServiceUnavailableWarning = isServiceWarningSticky || hasServiceUnavailableCountdown;
+  const serviceUnavailableCountdownText = serviceUnavailableCountdownSeconds !== null
+    ? `${serviceUnavailableCountdownSeconds}s`
+    : null;
   const lastSyncText = (() => {
     if (!lastSyncAt) return "Last sync: not available yet.";
     const syncDate = new Date(lastSyncAt);
@@ -505,6 +544,57 @@ export default function ScanActivityMonitor({
   }, [headerActionsHideEnter, headerActionsHideExit, headerCompactEnter, headerCompactExit, isMonitorOpen]);
 
   useEffect(() => {
+    if (outageSignalActive || streamOutageLikely) {
+      if (!isServiceWarningSticky) {
+        warningProgressBaselineRef.current = progressMarker;
+      }
+      setIsServiceWarningSticky(true);
+    }
+  }, [outageSignalActive, streamOutageLikely, isServiceWarningSticky, progressMarker]);
+
+  useEffect(() => {
+    const noActiveScan = !hasActiveSharedScan && !activity?.lock.active;
+    const shouldClearAfterShutdown =
+      noActiveScan &&
+      !outageSignalActive &&
+      !streamOutageLikely &&
+      serviceUnavailableRemainingSeconds === null;
+
+    if (shouldClearAfterShutdown && isServiceWarningSticky) {
+      setIsServiceWarningSticky(false);
+      warningProgressBaselineRef.current = null;
+    }
+  }, [
+    activity?.lock.active,
+    hasActiveSharedScan,
+    isServiceWarningSticky,
+    outageSignalActive,
+    serviceUnavailableRemainingSeconds,
+    streamOutageLikely,
+  ]);
+
+  useEffect(() => {
+    if (!isServiceWarningSticky) {
+      warningProgressBaselineRef.current = null;
+      return;
+    }
+
+    const baseline = warningProgressBaselineRef.current;
+    if (!baseline) {
+      warningProgressBaselineRef.current = progressMarker;
+      return;
+    }
+
+    const progressedInSameBatch = baseline.key === progressMarker.key && progressMarker.score > baseline.score;
+    const movedToNewBatch = baseline.key !== "none" && progressMarker.key !== baseline.key && progressMarker.key !== "none";
+
+    if (progressedInSameBatch || movedToNewBatch) {
+      setIsServiceWarningSticky(false);
+      warningProgressBaselineRef.current = null;
+    }
+  }, [progressMarker, isServiceWarningSticky]);
+
+  useEffect(() => {
     if (!hasActiveSharedScan) {
       setShowHistoryPanel(true);
       return;
@@ -526,7 +616,14 @@ export default function ScanActivityMonitor({
     if (!canStop || !activeBatch || isStopping) return;
     setIsStopping(true);
     try {
-      await cancelBatch(activeBatch.id);
+      const latestActivity = await refreshActivity();
+      const latestActiveIds = latestActivity?.activeBatches.map((batch) => batch.id) || [];
+      const targetBatchId = latestActiveIds.includes(activeBatch.id)
+        ? activeBatch.id
+        : (latestActiveIds[0] || null);
+
+      if (!targetBatchId) return;
+      await cancelBatch(targetBatchId);
     } finally {
       setIsStopping(false);
     }
@@ -589,6 +686,20 @@ export default function ScanActivityMonitor({
             <div />
           )}
           <div className="flex items-center gap-2">
+            {showServiceUnavailableWarning && (
+              <div className="inline-flex items-center gap-1.5 rounded-full border border-red-300/85 bg-red-600/95 px-2 py-1 text-white">
+                <span
+                  className="scan-mini-warning-badge inline-flex h-4.5 w-4.5 items-center justify-center rounded-full bg-red-700 text-white"
+                  aria-label="OpenSSL scanning service warning"
+                  title="OpenSSL scanning endpoint is unavailable"
+                >
+                  <AlertTriangle className="scan-mini-warning-icon h-3 w-3" />
+                </span>
+                <span className="text-[10px] font-extrabold uppercase tracking-wide text-white">
+                  {serviceUnavailableCountdownText || "Warning"}
+                </span>
+              </div>
+            )}
             <button
               type="button"
               onClick={openMonitor}
@@ -775,6 +886,25 @@ export default function ScanActivityMonitor({
             </div>
 
             <div ref={modalScrollRef} className="flex-1 overflow-y-auto px-6 py-6 sm:px-7">
+              {showServiceUnavailableWarning && (
+                <div className="mb-4 rounded-[1.05rem] border border-red-300 bg-red-600 px-4 py-3 text-white shadow-[0_8px_28px_rgba(127,29,29,0.35)]">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="scan-modal-warning-icon mt-0.5 h-5 w-5 shrink-0 text-white" />
+                    <div>
+                      <p className="text-xs font-extrabold uppercase tracking-[0.12em] text-red-100">Warning</p>
+                      <p className="mt-0.5 text-sm font-semibold leading-relaxed text-white">
+                        OpenSSL scanning endpoint appears unavailable. Live scans may stall until the service recovers.
+                      </p>
+                      {serviceUnavailableCountdownText && (
+                        <p className="mt-1 text-xs font-extrabold uppercase tracking-[0.12em] text-red-100">
+                          Auto-stop in {serviceUnavailableCountdownText} remaining
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {!activity ? (
                 <div className="flex min-h-[320px] items-center justify-center">
                   <div className="flex items-center gap-3 text-[#8a5d33]/65">
@@ -1379,6 +1509,32 @@ export default function ScanActivityMonitor({
           animation: scan-compact-actions-enter 220ms ease-out;
         }
 
+        .scan-mini-warning-badge {
+          position: relative;
+          animation: scan-mini-warning-pulse 1.2s ease-in-out infinite;
+          box-shadow: 0 0 0 rgba(220, 38, 38, 0.5);
+        }
+
+        .scan-mini-warning-badge::after {
+          content: "";
+          position: absolute;
+          inset: -4px;
+          border-radius: 9999px;
+          border: 1.5px solid rgba(255, 255, 255, 0.9);
+          opacity: 0;
+          transform: scale(0.78);
+          animation: scan-mini-warning-radar 1.2s ease-out infinite;
+          pointer-events: none;
+        }
+
+        .scan-mini-warning-icon {
+          animation: scan-mini-warning-icon-blink 1.2s ease-in-out infinite;
+        }
+
+        .scan-modal-warning-icon {
+          animation: scan-mini-warning-icon-blink 1.2s ease-in-out infinite;
+        }
+
         @keyframes scan-shimmer {
           100% {
             transform: translateX(140%);
@@ -1489,6 +1645,42 @@ export default function ScanActivityMonitor({
           100% {
             opacity: 1;
             transform: translateY(0);
+          }
+        }
+
+        @keyframes scan-mini-warning-pulse {
+          0%,
+          100% {
+            transform: scale(1);
+            box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.5);
+          }
+
+          50% {
+            transform: scale(1.08);
+            box-shadow: 0 0 0 6px rgba(220, 38, 38, 0);
+          }
+        }
+
+        @keyframes scan-mini-warning-radar {
+          0% {
+            opacity: 0.95;
+            transform: scale(0.72);
+          }
+
+          100% {
+            opacity: 0;
+            transform: scale(1.38);
+          }
+        }
+
+        @keyframes scan-mini-warning-icon-blink {
+          0%,
+          100% {
+            opacity: 1;
+          }
+
+          50% {
+            opacity: 0.55;
           }
         }
       `}</style>

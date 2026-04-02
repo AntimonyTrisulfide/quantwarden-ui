@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import {
   Check,
+  Fingerprint,
   Search,
   Loader2,
   ShieldCheck,
@@ -31,7 +32,7 @@ interface AssetScanningProps {
 interface ScanData {
   id: string;
   type: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   resultData: string | null;
   createdAt: string;
   completedAt: string | null;
@@ -44,25 +45,37 @@ interface ScandAsset {
   isRoot: boolean;
   parentId: string | null;
   scanStatus?: string | null;
+  lastScanDate?: string | null;
   latestScan: ScanData | null;
   latestSuccessfulScan?: ScanData | null;
+}
+
+function formatRelativeTime(value: string | null | undefined) {
+  if (!value) return "Unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown";
+  return formatDistanceToNow(date, { addSuffix: true });
 }
 
 export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningProps) {
   const [assets, setAssets] = useState<ScandAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
-  const [filterType, setFilterType] = useState<"all" | "successful" | "failed" | "dnsExpired" | "unscanned">("all");
+  const [filterType, setFilterType] = useState<"all" | "successful" | "timeout" | "dnsExpired" | "unscanned">("all");
   const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isStoppingBatch, setIsStoppingBatch] = useState(false);
+  const [stableAssetCategory, setStableAssetCategory] = useState<Record<string, "successful" | "timeout" | "dnsExpired" | "unscanned">>({});
+  const [isHeaderCompact, setIsHeaderCompact] = useState(false);
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
   const activitySnapshotRef = useRef<{
     activeCount: number;
     latestCompletedBatchId: string | null;
     progressSignature: string;
   } | null>(null);
   const initialActivityCheckDoneRef = useRef(false);
+  const lastReconnectAttemptAtRef = useRef(0);
   const {
     hydrated,
     connected,
@@ -70,6 +83,7 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
     createBatch,
     cancelBatch,
     checkForActiveScans,
+    refreshActivity,
     pendingBatchType,
     cancellingBatchId,
   } = useScanActivity(org.id, {
@@ -110,6 +124,33 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
     }, 30000);
     return () => window.clearInterval(interval);
   }, [activity?.activeBatches.length, connected, fetchAssets, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || connected || !activity?.activeBatches.length) return;
+
+    const now = Date.now();
+    if (now - lastReconnectAttemptAtRef.current < 12000) return;
+    lastReconnectAttemptAtRef.current = now;
+
+    void checkForActiveScans({
+      showIdleToast: false,
+      startStreamOnActive: true,
+    });
+  }, [activity?.activeBatches.length, checkForActiveScans, connected, hydrated]);
+
+  useEffect(() => {
+    const container = listScrollRef.current;
+    if (!container) return;
+
+    const onScroll = () => {
+      const top = container.scrollTop;
+      setIsHeaderCompact((prev) => (prev ? top > 42 : top > 68));
+    };
+
+    onScroll();
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     if (!hydrated || !activity) return;
@@ -198,7 +239,18 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
     setIsStoppingBatch(true);
 
     try {
-      const result = await cancelBatch(batchId);
+      const latestActivity = await refreshActivity();
+      const latestActiveIds = latestActivity?.activeBatches.map((batch) => batch.id) || [];
+      const targetBatchId = latestActiveIds.includes(batchId)
+        ? batchId
+        : (latestActiveIds[0] || null);
+
+      if (!targetBatchId) {
+        setActionError("No active scan batch found to stop.");
+        return;
+      }
+
+      const result = await cancelBatch(targetBatchId);
       if (!result.ok) {
         setActionError(result.error || "Failed to stop the active scan batch.");
       } else {
@@ -245,23 +297,68 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
 
   const domainAssets = assets.filter((a) => a.type === "domain");
   const totalDiscovered = domainAssets.length;
-  const unscanned = domainAssets.filter((a) => !a.latestScan && !activeTaskByAsset.has(a.id)).length;
-  const dnsExpired = domainAssets.filter((asset) => asset.scanStatus === "expired").length;
-  const scanFailed = domainAssets.filter((asset) => asset.latestScan?.status === "failed").length;
-  const scanSuccessful = domainAssets.filter((asset) => asset.latestScan?.status === "completed" && asset.scanStatus !== "expired").length;
+
+  useEffect(() => {
+    setStableAssetCategory((previous) => {
+      const next: Record<string, "successful" | "timeout" | "dnsExpired" | "unscanned"> = {};
+      let changed = false;
+
+      for (const asset of domainAssets) {
+        const hasActiveTask = activeTaskByAsset.has(asset.id);
+        const previousCategory = previous[asset.id];
+
+        let terminalCategory: "successful" | "timeout" | "dnsExpired" | "unscanned" | null = null;
+        if (asset.scanStatus === "expired") {
+          terminalCategory = "dnsExpired";
+        } else if (asset.scanStatus === "failed") {
+          terminalCategory = "timeout";
+        } else if (asset.scanStatus === "completed") {
+          terminalCategory = "successful";
+        } else if (asset.latestScan?.status === "completed") {
+          terminalCategory = "successful";
+        } else if (asset.latestScan?.status === "failed") {
+          terminalCategory = "timeout";
+        } else if (!asset.latestScan && !hasActiveTask) {
+          terminalCategory = "unscanned";
+        }
+
+        // Keep prior terminal category while item is currently pending/running.
+        const resolvedCategory = terminalCategory ?? previousCategory ?? "unscanned";
+        next[asset.id] = resolvedCategory;
+
+        if (previousCategory !== resolvedCategory) {
+          changed = true;
+        }
+      }
+
+      if (!changed) {
+        const previousKeys = Object.keys(previous);
+        if (previousKeys.length === Object.keys(next).length) {
+          return previous;
+        }
+      }
+
+      return next;
+    });
+  }, [activeTaskByAsset, domainAssets]);
+
+  const unscanned = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "unscanned").length;
+  const dnsExpired = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "dnsExpired").length;
+  const scanTimeout = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "timeout").length;
+  const scanSuccessful = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "successful").length;
 
   let filteredAssets = domainAssets.filter(
     (a) => a.value.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   if (filterType === "successful") {
-    filteredAssets = filteredAssets.filter((asset) => asset.latestScan?.status === "completed");
-  } else if (filterType === "failed") {
-    filteredAssets = filteredAssets.filter((asset) => asset.latestScan?.status === "failed");
+    filteredAssets = filteredAssets.filter((asset) => stableAssetCategory[asset.id] === "successful");
+  } else if (filterType === "timeout") {
+    filteredAssets = filteredAssets.filter((asset) => stableAssetCategory[asset.id] === "timeout");
   } else if (filterType === "dnsExpired") {
-    filteredAssets = filteredAssets.filter((asset) => asset.scanStatus === "expired");
+    filteredAssets = filteredAssets.filter((asset) => stableAssetCategory[asset.id] === "dnsExpired");
   } else if (filterType === "unscanned") {
-    filteredAssets = filteredAssets.filter((asset) => !asset.latestScan && !activeTaskByAsset.has(asset.id));
+    filteredAssets = filteredAssets.filter((asset) => stableAssetCategory[asset.id] === "unscanned");
   }
 
   const filteredAssetIdKey = filteredAssets.map((asset) => asset.id).join("|");
@@ -287,7 +384,7 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
     }
 
     if (scan.status === "failed") {
-      let errMsg = "Scan failed to execute.";
+      let errMsg = "Timeout Possibly Port Not Open";
       if (scan.resultData) {
         try {
           const parsed = JSON.parse(scan.resultData);
@@ -563,33 +660,80 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
 
   return (
     <div className="h-full flex flex-col bg-white/40 backdrop-blur-xl border border-white/40 rounded-3xl shadow-2xl overflow-hidden ring-1 ring-amber-500/20">
-      <div className="p-6 sm:p-8 bg-linear-to-br from-white/80 to-white/40 border-b border-amber-500/10 shrink-0">
-        <div className="flex flex-col gap-6">
-          <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-linear-to-br from-[#8B0000] to-red-600 flex items-center justify-center shrink-0 shadow-lg shadow-red-900/20">
-              <ShieldCheck className="w-6 h-6 text-white" />
+      <div className={`${isHeaderCompact ? "px-6 py-2 sm:px-8 sm:py-2" : "p-6 sm:p-8"} bg-linear-to-br from-white/80 to-white/40 border-b border-amber-500/10 shrink-0 transition-all duration-300`}>
+        <div className={`flex flex-col ${isHeaderCompact ? "gap-1" : "gap-6"} transition-all duration-300`}>
+          <div className={`flex ${isHeaderCompact ? "items-center" : "items-start"} gap-4 transition-all duration-300`}>
+            <div className={`${isHeaderCompact ? "w-10 h-10 rounded-xl" : "w-12 h-12 rounded-2xl"} bg-linear-to-br from-[#8B0000] to-red-600 flex items-center justify-center shrink-0 shadow-lg shadow-red-900/20 transition-all duration-300`}>
+              <ShieldCheck className={`${isHeaderCompact ? "w-5 h-5" : "w-6 h-6"} text-white transition-all duration-300`} />
             </div>
-            <div>
-              <h2 className="text-2xl font-black text-[#3d200a] tracking-tight">OpenSSL TLS Scanning</h2>
-              <p className="text-sm font-medium text-[#8a5d33]/80 mt-1 max-w-xl leading-relaxed">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className={`${isHeaderCompact ? "text-xl" : "text-2xl"} font-black text-[#3d200a] tracking-tight transition-all duration-300`}>OpenSSL TLS Scanning</h2>
+                {isHeaderCompact && (
+                  <div className="flex items-center gap-1.5">
+                    {isAdmin && (
+                      <Link
+                        href={`/app/${org.slug}/explore`}
+                        data-tip="Open Explorer"
+                        className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] text-[#5a3500] shadow-sm transition-all hover:brightness-105"
+                      >
+                        <Search className="h-4 w-4" />
+                      </Link>
+                    )}
+                    {canScan && activeBatch && (
+                      <button
+                        onClick={() => void handleStopBatch(activeBatch.id)}
+                        disabled={isStoppingActiveBatch}
+                        data-tip="Stop Active Scan"
+                        className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full border border-red-200 bg-red-50 text-red-700 transition-all hover:bg-red-100 disabled:opacity-50"
+                      >
+                        {isStoppingActiveBatch ? <Loader2 className="h-4 w-4 animate-spin" /> : <AlertTriangle className="h-4 w-4" />}
+                      </button>
+                    )}
+                    {canScan && (
+                      <>
+                        <button
+                          onClick={() => void handleGroupScan()}
+                          disabled={orgScanLocked || isCreatingAnyBatch || selectedAssetIds.length < 2}
+                          data-tip="Scan Group"
+                          className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#8B0000]/20 bg-white/80 text-[#8B0000] transition-all hover:bg-white disabled:opacity-50"
+                        >
+                          {isCreatingGroupScan ? <Loader2 className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />}
+                        </button>
+                        <button
+                          onClick={() => void handleScanAll()}
+                          disabled={orgScanLocked || isCreatingAnyBatch}
+                          data-tip={isFullScanActive ? `Full Scan Running (${(fullScan?.completedAssets ?? 0) + (fullScan?.failedAssets ?? 0)}/${fullScan?.totalAssets ?? 0})` : "Scan All Assets"}
+                          className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full bg-linear-to-r from-[#8B0000] to-[rgb(110,0,0)] text-white transition-colors hover:from-[#9f0000] hover:to-[#7a0000] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {isFullScanActive || isCreatingFullScan ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+              <p className={`${isHeaderCompact ? "hidden" : "text-sm"} font-medium text-[#8a5d33]/80 mt-1 max-w-xl leading-relaxed transition-all duration-300`}>
                 Deep-profile your domains with OpenSSL to inspect certificates, negotiated groups, and target cipher preference order.
               </p>
+              {!isHeaderCompact && (
               <div className="mt-4 flex flex-wrap gap-2">
                 {isAdmin && (
                   <Link
                     href={`/app/${org.slug}/explore`}
-                    className="flex items-center gap-2 px-4 py-2 bg-white/70 border border-[#8B0000]/20 text-[#8B0000] text-xs font-bold uppercase tracking-wider rounded-xl hover:bg-white transition-colors"
+                    className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] px-5 py-2 text-xs font-extrabold uppercase tracking-wider text-[#5a3500] shadow-sm transition-all hover:brightness-105"
                   >
+                    <Search className="h-3.5 w-3.5" />
                     Open Explorer
                   </Link>
                 )}
                 {canScan && (
                   <>
-                  {connected && activeBatch && (
+                  {activeBatch && (
                     <button
                       onClick={() => void handleStopBatch(activeBatch.id)}
                       disabled={isStoppingActiveBatch}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-red-50 border border-red-200 text-red-700 text-sm font-bold rounded-xl hover:bg-red-100 transition-all disabled:opacity-50"
+                      className="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-5 py-2.5 text-sm font-bold text-red-700 transition-all hover:bg-red-100 disabled:opacity-50"
                     >
                       {isStoppingActiveBatch ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -599,26 +743,33 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                       Stop Active Scan
                     </button>
                   )}
-                  <button
-                    onClick={() => void handleGroupScan()}
-                    disabled={orgScanLocked || isCreatingAnyBatch || selectedAssetIds.length < 2}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-white/80 border border-[#8B0000]/20 text-[#8B0000] text-sm font-bold rounded-xl hover:bg-white transition-all disabled:opacity-50"
-                  >
-                    {isCreatingGroupScan ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Check className="w-4 h-4" />
+                  <div className="relative group">
+                    <button
+                      onClick={() => void handleGroupScan()}
+                      disabled={orgScanLocked || isCreatingAnyBatch || selectedAssetIds.length < 2}
+                      className="inline-flex items-center gap-2 rounded-full border border-[#8B0000]/20 bg-white/80 px-5 py-2.5 text-sm font-bold text-[#8B0000] transition-all hover:bg-white disabled:opacity-50"
+                    >
+                      {isCreatingGroupScan ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Fingerprint className="w-4 h-4" />
+                      )}
+                      {isCreatingGroupScan
+                        ? "Starting Group Scan..."
+                        : selectedAssetIds.length >= 2
+                          ? `Scan Group (${selectedAssetIds.length})`
+                          : "Scan Group"}
+                    </button>
+                    {selectedAssetIds.length < 2 && !isCreatingGroupScan && (
+                      <span className="pointer-events-none absolute left-1/2 top-full z-10 mt-2 hidden -translate-x-1/2 whitespace-nowrap rounded-lg border border-[#8B0000]/25 bg-white px-2.5 py-1 text-[11px] font-semibold text-[#8B0000] shadow-md group-hover:inline-block">
+                        Select at least 2 assets
+                      </span>
                     )}
-                    {isCreatingGroupScan
-                      ? "Starting Group Scan..."
-                      : selectedAssetIds.length >= 2
-                        ? `Group Scan (${selectedAssetIds.length})`
-                        : "Select 2+ for Group Scan"}
-                  </button>
+                  </div>
                   <button
                     onClick={() => void handleScanAll()}
                     disabled={orgScanLocked || isCreatingAnyBatch}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-linear-to-r from-[#8B0000] to-[rgb(110,0,0)] text-white text-sm font-bold rounded-xl hover:shadow-lg hover:-translate-y-0.5 transition-all disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-none cursor-pointer"
+                    className="inline-flex items-center gap-2 rounded-full bg-linear-to-r from-[#8B0000] to-[rgb(110,0,0)] px-6 py-2.5 text-sm font-bold text-white transition-colors hover:from-[#9f0000] hover:to-[#7a0000] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {isFullScanActive || isCreatingFullScan ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -634,8 +785,9 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                   </>
                 )}
               </div>
+              )}
               {canScan && (fullScan || groupScan) && (
-                <p className="mt-2 text-[11px] font-bold text-[#8a5d33]/65">
+                <p className={`${isHeaderCompact ? "hidden" : "mt-2 text-[11px]"} font-bold text-[#8a5d33]/65`}>
                   {fullScan
                     ? `Full scan started ${formatDistanceToNow(new Date(fullScan.createdAt), { addSuffix: true })}`
                     : groupScan
@@ -664,8 +816,8 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
         )}
       </div>
 
-      <div className="px-6 py-4 bg-white/40 border-b border-amber-500/10 shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="relative max-w-sm w-full">
+      <div className={`${isHeaderCompact ? "px-5 py-1.5" : "px-6 py-4"} bg-white/40 border-b border-amber-500/10 shrink-0 flex flex-col sm:flex-row sm:items-center justify-between ${isHeaderCompact ? "gap-2" : "gap-4"} transition-all duration-300`}>
+        <div className={`relative w-full ${isHeaderCompact ? "max-w-[340px]" : "max-w-sm"} transition-all duration-300`}>
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#8a5d33]/40" />
           <input
             type="text"
@@ -676,13 +828,17 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
           />
         </div>
 
-        <div className="flex items-center gap-1 sm:gap-2 overflow-x-auto px-1 sm:px-0 scrollbar-hide shrink-0">
+        <div className={`flex items-center overflow-x-auto px-1 sm:px-0 scrollbar-hide shrink-0 ${isHeaderCompact ? "gap-0.5 sm:gap-1" : "gap-1 sm:gap-2"} transition-all duration-300`}>
           <button
             onClick={() => setFilterType("all")}
             className={`flex flex-col items-center px-3 py-1.5 rounded-xl transition-all outline-none ${filterType === "all" ? "bg-[#8B0000]/7" : "hover:bg-black/5"}`}
           >
             <span className="text-[9px] uppercase tracking-widest font-bold text-[#8a5d33]/50">Inventory</span>
-            <span className="text-sm font-black text-[#3d200a]">{totalDiscovered}</span>
+            {loading ? (
+              <span className="scan-stat-skeleton mt-1 h-4 w-7 rounded-md" aria-label="Loading inventory" />
+            ) : (
+              <span className="text-sm font-black text-[#3d200a]">{totalDiscovered}</span>
+            )}
           </button>
 
           <div className="w-px h-6 bg-amber-500/20 hidden sm:block mx-1"></div>
@@ -692,17 +848,30 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
             className={`flex flex-col items-center px-3 py-1.5 rounded-xl transition-all outline-none ${filterType === "successful" ? "bg-emerald-500/10" : "hover:bg-black/5"}`}
           >
             <span className="text-[9px] uppercase tracking-widest font-bold text-[#8a5d33]/50">Successful</span>
-            <span className="text-sm font-black text-emerald-600">{scanSuccessful}</span>
+            {loading ? (
+              <span className="scan-stat-skeleton mt-1 h-4 w-7 rounded-md" aria-label="Loading successful count" />
+            ) : (
+              <span className="text-sm font-black text-emerald-600">{scanSuccessful}</span>
+            )}
           </button>
 
           <div className="w-px h-6 bg-amber-500/20 hidden sm:block mx-1"></div>
 
           <button
-            onClick={() => setFilterType("failed")}
-            className={`flex flex-col items-center px-3 py-1.5 rounded-xl transition-all outline-none ${filterType === "failed" ? "bg-red-500/10" : "hover:bg-black/5"}`}
+            onClick={() => setFilterType("timeout")}
+            className={`flex flex-col items-center px-3 py-1.5 rounded-xl transition-all outline-none ${filterType === "timeout" ? "bg-red-500/10" : "hover:bg-black/5"}`}
           >
-            <span className="text-[9px] uppercase tracking-widest font-bold text-[#8a5d33]/50">Failed</span>
-            <span className="text-sm font-black text-red-600">{scanFailed}</span>
+            <span
+              className="text-[9px] uppercase tracking-widest font-bold text-[#8a5d33]/50"
+              title="Timeout Possibly Port Not Open"
+            >
+              Timeout
+            </span>
+            {loading ? (
+              <span className="scan-stat-skeleton mt-1 h-4 w-7 rounded-md" aria-label="Loading timeout count" />
+            ) : (
+              <span className="text-sm font-black text-red-600">{scanTimeout}</span>
+            )}
           </button>
 
           <div className="w-px h-6 bg-amber-500/20 hidden sm:block mx-1"></div>
@@ -712,7 +881,11 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
             className={`flex flex-col items-center px-3 py-1.5 rounded-xl transition-all outline-none ${filterType === "dnsExpired" ? "bg-red-500/10" : "hover:bg-black/5"}`}
           >
             <span className="text-[9px] uppercase tracking-widest font-bold text-[#8a5d33]/50">DNS Expired</span>
-            <span className="text-sm font-black text-red-700">{dnsExpired}</span>
+            {loading ? (
+              <span className="scan-stat-skeleton mt-1 h-4 w-7 rounded-md" aria-label="Loading DNS expired count" />
+            ) : (
+              <span className="text-sm font-black text-red-700">{dnsExpired}</span>
+            )}
           </button>
 
           <div className="w-px h-6 bg-amber-500/20 hidden sm:block mx-1"></div>
@@ -722,7 +895,11 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
             className={`flex flex-col items-center px-3 py-1.5 rounded-xl transition-all outline-none ${filterType === "unscanned" ? "bg-amber-500/10" : "hover:bg-black/5"}`}
           >
             <span className="text-[9px] uppercase tracking-widest font-bold text-[#8a5d33]/50">Unscanned</span>
-            <span className="text-sm font-black text-amber-600">{unscanned}</span>
+            {loading ? (
+              <span className="scan-stat-skeleton mt-1 h-4 w-7 rounded-md" aria-label="Loading unscanned count" />
+            ) : (
+              <span className="text-sm font-black text-amber-600">{unscanned}</span>
+            )}
           </button>
         </div>
 
@@ -734,7 +911,7 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-2">
+      <div ref={listScrollRef} className="flex-1 overflow-y-auto p-4 space-y-2">
         {loading ? (
           <div className="flex items-center justify-center p-12">
             <Loader2 className="w-8 h-8 text-[#8B0000] animate-spin" />
@@ -751,12 +928,23 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
           filteredAssets.map((asset) => {
             const task = activeTaskByAsset.get(asset.id);
             const isQueued = task?.status === "pending";
-            const isRunning =
-              task?.status === "running" ||
-              asset.latestScan?.status === "pending" ||
-              asset.latestScan?.status === "running" ||
-              asset.scanStatus === "scanning";
+            const isRunning = task?.status === "running";
             const isDnsExpired = asset.scanStatus === "expired";
+            const assetCategory = stableAssetCategory[asset.id] || "unscanned";
+            const statusLabel = isQueued
+              ? "queued"
+              : isRunning
+                ? "running"
+                : isDnsExpired || assetCategory === "dnsExpired"
+                  ? "dns expired"
+                  : assetCategory === "successful"
+                    ? "success"
+                    : assetCategory === "timeout"
+                      ? "timeout"
+                      : "not scanned yet";
+            const statusTime = isQueued || isRunning
+              ? task?.createdAt || null
+              : (asset.latestScan?.completedAt || asset.latestScan?.createdAt || asset.lastScanDate || null);
             const isExpanded = expandedAssetId === asset.id;
             const isSelected = selectedAssetIds.includes(asset.id);
 
@@ -796,19 +984,22 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                         )}
                       </p>
                       <div className="flex items-center gap-2 mt-1.5">
-                        {asset.latestScan ? (
+                        {(asset.latestScan || statusTime) ? (
                           <>
                             <span className={`text-[10px] font-bold uppercase tracking-wider ${
                               isQueued ? "text-slate-500" :
                               isRunning ? "text-amber-500 animate-pulse" :
-                              isDnsExpired ? "text-red-600" :
-                              asset.latestScan.status === "completed" ? "text-emerald-500" : "text-red-500"
+                              statusLabel === "dns expired" ? "text-red-600" :
+                              statusLabel === "success" ? "text-emerald-500" :
+                              statusLabel === "timeout" ? "text-red-500" : "text-[#8a5d33]/60"
                             }`}>
-                              {isQueued ? "queued" : isRunning ? "running" : isDnsExpired ? "dns expired" : asset.latestScan.status}
+                              <span title={statusLabel === "timeout" ? "Timeout Possibly Port Not Open" : undefined}>
+                                {statusLabel}
+                              </span>
                             </span>
                             <span className="w-1 h-1 rounded-full bg-[#8a5d33]/20"></span>
                             <span className="text-[10px] font-bold text-[#8a5d33]/50">
-                              {formatDistanceToNow(new Date(task?.createdAt || asset.latestScan.createdAt), { addSuffix: true })}
+                              {formatRelativeTime(statusTime)}
                             </span>
                           </>
                         ) : (
@@ -877,7 +1068,7 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                         <div className="space-y-3">
                           {asset.latestScan?.status === "failed" && asset.latestSuccessfulScan && (
                             <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-                              The latest scan attempt failed, so the most recent successful OpenSSL result is shown below.
+                              The latest scan attempt timed out, so the most recent successful OpenSSL result is shown below.
                             </div>
                           )}
                           {renderScanDetails(asset.latestSuccessfulScan || asset.latestScan!)}
@@ -897,6 +1088,60 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
           })
         )}
       </div>
+
+      <style jsx>{`
+        .scan-stat-skeleton {
+          position: relative;
+          overflow: hidden;
+          background: rgba(138, 93, 51, 0.18);
+        }
+
+        .scan-stat-skeleton::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          transform: translateX(-120%);
+          background: linear-gradient(100deg, transparent 10%, rgba(255, 255, 255, 0.75) 50%, transparent 90%);
+          animation: scan-stat-shimmer 1.5s ease-in-out infinite;
+        }
+
+        @keyframes scan-stat-shimmer {
+          100% {
+            transform: translateX(120%);
+          }
+        }
+
+        .action-tip {
+          position: relative;
+        }
+
+        .action-tip::after {
+          content: attr(data-tip);
+          position: absolute;
+          left: 50%;
+          top: calc(100% + 8px);
+          transform: translateX(-50%);
+          white-space: nowrap;
+          border-radius: 0.6rem;
+          border: 1px solid rgba(139, 0, 0, 0.22);
+          background: rgba(255, 255, 255, 0.98);
+          color: #6b0000;
+          padding: 0.35rem 0.5rem;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.01em;
+          box-shadow: 0 10px 22px rgba(61, 32, 10, 0.18);
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 0.16s ease;
+          z-index: 30;
+        }
+
+        .action-tip:hover::after,
+        .action-tip:focus-visible::after {
+          opacity: 1;
+        }
+      `}</style>
     </div>
   );
 }

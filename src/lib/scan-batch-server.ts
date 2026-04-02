@@ -360,33 +360,19 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
       return null;
     }
 
-    const affectedAssetRows = await tx.$queryRawUnsafe<{ assetId: string }[]>(
-      `WITH updated_scans AS (
-          UPDATE "asset_scan"
-          SET
-            status = 'cancelled',
-            "resultData" = COALESCE("resultData", $3),
-            "completedAt" = COALESCE("completedAt", $4)
-          WHERE "batchId" = $1
-            AND status IN ('pending', 'running')
-          RETURNING "assetId"
-        )
-        SELECT DISTINCT "assetId" FROM updated_scans`,
+    const cancelledScanRows = await tx.$queryRawUnsafe<{ assetId: string }[]>(
+      `UPDATE "asset_scan"
+       SET
+         status = 'cancelled',
+         "resultData" = COALESCE("resultData", $3),
+         "completedAt" = COALESCE("completedAt", $4)
+       WHERE "batchId" = $1
+         AND status IN ('pending', 'running')`,
       batchId,
       orgId,
       cancellationPayload,
       now
     );
-
-    if (affectedAssetRows.length > 0) {
-      await tx.$executeRawUnsafe(
-        `UPDATE "asset"
-         SET "scanStatus" = 'idle', "lastScanDate" = $2
-         WHERE id = ANY($1::text[])`,
-        affectedAssetRows.map((row) => row.assetId),
-        now
-      );
-    }
 
     await tx.$executeRawUnsafe(
       `UPDATE "asset_scan_batch"
@@ -396,12 +382,68 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
       now
     );
 
-    return batch;
+    return {
+      batch,
+      affectedAssetIds: Array.from(new Set(cancelledScanRows.map((row) => row.assetId))),
+    };
   });
 
   if (!rows) return null;
 
-  return rows;
+  for (const assetId of rows.affectedAssetIds) {
+    const previousTerminalRows = await prisma.$queryRawUnsafe<ScanRow[]>(
+      `SELECT
+          s.id,
+          s."batchId",
+          s."assetId",
+          a.value as "assetValue",
+          s.status,
+          s."resultData",
+          s."createdAt",
+          s."completedAt"
+        FROM "asset_scan" s
+        INNER JOIN "asset" a ON a.id = s."assetId"
+        INNER JOIN "asset_scan_batch" b ON b.id = s."batchId"
+        WHERE s."assetId" = $1
+          AND b."organizationId" = $2
+          AND s.type = 'openssl'
+          AND s."batchId" <> $3
+          AND s.status IN ('completed', 'failed')
+        ORDER BY
+          COALESCE(s."completedAt", s."createdAt") DESC,
+          s."createdAt" DESC
+        LIMIT 1`,
+      assetId,
+      orgId,
+      batchId
+    );
+
+    const previousTerminal = previousTerminalRows[0] || null;
+    let restoredStatus: "idle" | "completed" | "failed" | "expired" = "idle";
+    let restoredLastScanDate: Date | null = null;
+
+    if (previousTerminal) {
+      if (previousTerminal.status === "failed") {
+        restoredStatus = "failed";
+      } else {
+        const parsed = parseOpenSSLScanResult(previousTerminal.resultData);
+        restoredStatus = parsed.summary?.dnsMissing ? "expired" : "completed";
+      }
+
+      restoredLastScanDate = previousTerminal.completedAt || previousTerminal.createdAt;
+    }
+
+    await prisma.$executeRawUnsafe(
+      `UPDATE "asset"
+       SET "scanStatus" = $1, "lastScanDate" = $2
+       WHERE id = $3`,
+      restoredStatus,
+      restoredLastScanDate,
+      assetId
+    );
+  }
+
+  return rows.batch;
 }
 
 export async function getOrgScanActivity(orgId: string, canScan: boolean): Promise<OrgScanActivityPayload> {

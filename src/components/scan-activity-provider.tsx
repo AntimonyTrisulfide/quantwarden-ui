@@ -10,6 +10,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import type { OrgScanActivityPayload, ScanBatchType } from "@/lib/scan-activity-types";
 
@@ -18,6 +19,7 @@ const STREAM_RECONNECT_MAX_MS = 15000;
 const STREAM_ROTATE_AFTER_MS = 255000;
 const STREAM_NO_ACTIVE_GRACE_CHECKS = 2;
 const LAST_SYNC_STORAGE_PREFIX = "scan-activity-last-sync:";
+const SCAN_REQUEST_TIMEOUT_MS = 20000;
 
 interface CreateBatchInput {
   orgId: string;
@@ -42,6 +44,7 @@ interface OrgActivityState {
   data: OrgScanActivityPayload | null;
   loading: boolean;
   error: string | null;
+  serviceUnavailableRemainingSeconds: number | null;
   checkingConnection: boolean;
   orgSlug?: string;
   lastSyncAt: string | null;
@@ -112,6 +115,7 @@ const defaultOrgState: OrgActivityState = {
   data: null,
   loading: true,
   error: null,
+  serviceUnavailableRemainingSeconds: null,
   checkingConnection: false,
   lastSyncAt: null,
   connected: false,
@@ -164,6 +168,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       data: activity,
       loading: false,
       error: options?.error ?? null,
+      serviceUnavailableRemainingSeconds: null,
       checkingConnection: previous.checkingConnection,
       orgSlug: previous.orgSlug,
       lastSyncAt: syncedAt,
@@ -254,6 +259,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       ...previous,
       connected: options.connected ?? previous.connected,
       error: options.error !== undefined ? options.error : previous.error,
+      serviceUnavailableRemainingSeconds: previous.serviceUnavailableRemainingSeconds,
       streamIntent: options.streamIntent ?? previous.streamIntent,
       streamStatus: options.streamStatus ?? previous.streamStatus,
       pendingBatchType: previous.pendingBatchType,
@@ -294,6 +300,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       ...previous,
       connected: false,
       error: options?.error ?? null,
+      serviceUnavailableRemainingSeconds: null,
       streamIntent: options?.clearIntent === false ? previous.streamIntent : "off",
       streamStatus: options?.error ? "error" : "idle",
       pendingBatchType: previous.pendingBatchType,
@@ -496,6 +503,72 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       } catch {}
     });
 
+    source.addEventListener("service_unavailable", (event) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          message?: string;
+          timestamp?: number;
+          remainingSeconds?: number;
+          shutdownAt?: number;
+        };
+        const message = payload.message || "OpenSSL scanning endpoint appears unavailable.";
+        const remainingSeconds = typeof payload.remainingSeconds === "number"
+          ? Math.max(0, Math.ceil(payload.remainingSeconds))
+          : null;
+        const countdownMessage = remainingSeconds !== null
+          ? `${message} Auto-stopping in ${remainingSeconds}s.`
+          : message;
+
+        toast.error(countdownMessage, {
+          id: `scan-service-unavailable-${orgId}`,
+          duration: 8000,
+          icon: <AlertTriangle className="h-4 w-4 text-white" />,
+          style: {
+            background: "#dc2626",
+            border: "1px solid #b91c1c",
+            color: "#ffffff",
+          },
+        });
+
+        const previous = orgStatesRef.current[orgId] || defaultOrgState;
+        setOrgState(orgId, {
+          ...previous,
+          error: message,
+          serviceUnavailableRemainingSeconds: remainingSeconds,
+          streamStatus: previous.connected ? "connected" : previous.streamStatus,
+        });
+      } catch {}
+    });
+
+    source.addEventListener("service_shutdown", (event) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          message?: string;
+          activity?: OrgScanActivityPayload;
+        };
+        const shutdownMessage = payload.message || "OpenSSL endpoint stayed unavailable. Active scans were stopped.";
+
+        if (payload.activity) {
+          applyActivityState(orgId, payload.activity, { connected: false, error: null });
+        }
+
+        stopOrgStreaming(orgId, { clearIntent: true, error: shutdownMessage });
+        const previous = orgStatesRef.current[orgId] || defaultOrgState;
+        setOrgState(orgId, {
+          ...previous,
+          serviceUnavailableRemainingSeconds: null,
+        });
+      } catch {}
+    });
+
+    source.addEventListener("service_recovered", () => {
+      const previous = orgStatesRef.current[orgId] || defaultOrgState;
+      setOrgState(orgId, {
+        ...previous,
+        serviceUnavailableRemainingSeconds: null,
+      });
+    });
+
     source.addEventListener("heartbeat", () => {
       const previous = orgStatesRef.current[orgId] || defaultOrgState;
       if (!previous.connected) {
@@ -503,6 +576,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
           ...previous,
           connected: true,
           error: null,
+          serviceUnavailableRemainingSeconds: previous.serviceUnavailableRemainingSeconds,
           streamStatus: "connected",
         });
       }
@@ -711,11 +785,16 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
 
       toast.loading(`Starting ${batchTypeLabel(input.type)}...`, { id: createToastId });
 
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), SCAN_REQUEST_TIMEOUT_MS);
+
       const response = await fetch("/api/orgs/scans/batches", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify(input),
       });
+      window.clearTimeout(timeoutId);
 
       const data = await response.json().catch(() => null);
       if (!response.ok) {
@@ -752,8 +831,11 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
 
       return { ok: true };
     } catch (error: any) {
-      toast.error(error?.message || "Failed to create scan batch.", { id: createToastId });
-      return { ok: false, error: error?.message || "Failed to create scan batch." };
+      const message = error?.name === "AbortError"
+        ? "Scan request timed out. OpenSSL service may be unavailable."
+        : (error?.message || "Failed to create scan batch.");
+      toast.error(message, { id: createToastId });
+      return { ok: false, error: message };
       } finally {
         const latest = orgStatesRef.current[input.orgId] || defaultOrgState;
         setOrgState(input.orgId, {
@@ -773,6 +855,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
     setOrgState(input.orgId, {
       ...previous,
       error: null,
+      serviceUnavailableRemainingSeconds: null,
       cancellingBatchId: input.batchId,
     });
 
@@ -894,6 +977,7 @@ export function useScanActivity(
     hydrated,
     connected: state.connected,
     lastSyncAt: state.lastSyncAt,
+    serviceUnavailableRemainingSeconds: state.serviceUnavailableRemainingSeconds ?? null,
     checkingConnection: state.checkingConnection,
     isMonitorOpen: monitorOrgId === orgId,
     openMonitor: () => openMonitor(orgId),
