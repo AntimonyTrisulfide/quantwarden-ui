@@ -21,6 +21,9 @@ export interface RunOpenSSLScanItemResult {
   error?: string;
 }
 
+const DEFAULT_OPENSSL_PROBE_TIMEOUT_SECONDS = 3;
+const DEFAULT_OPENSSL_REQUEST_TIMEOUT_MS = 15000;
+
 type OpenSSLErrorKind = "request_timeout" | "service_unavailable" | "other";
 
 function classifyOpenSSLError(error: unknown): OpenSSLErrorKind {
@@ -156,10 +159,13 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
 
   try {
     const opensslUrl = process.env.OPENSSL_API_URL || "http://127.0.0.1:8020";
-    const parsedTimeout = Number.parseInt(process.env.OPENSSL_API_TIMEOUT_SECONDS || "3", 10);
+    const parsedTimeout = Number.parseInt(
+      process.env.OPENSSL_API_TIMEOUT_SECONDS || String(DEFAULT_OPENSSL_PROBE_TIMEOUT_SECONDS),
+      10
+    );
     const timeoutSeconds = Number.isFinite(parsedTimeout)
       ? Math.min(60, Math.max(3, parsedTimeout))
-      : 3;
+      : DEFAULT_OPENSSL_PROBE_TIMEOUT_SECONDS;
     const parsedBatchSize = Number.parseInt(process.env.OPENSSL_API_PROBE_BATCH_SIZE || "10", 10);
     const probeBatchSize = Number.isFinite(parsedBatchSize)
       ? Math.min(50, Math.max(1, parsedBatchSize))
@@ -167,7 +173,7 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
     const parsedRequestTimeoutMs = Number.parseInt(process.env.OPENSSL_API_REQUEST_TIMEOUT_MS || "", 10);
     const requestTimeoutMs = Number.isFinite(parsedRequestTimeoutMs)
       ? Math.min(120000, Math.max(2000, parsedRequestTimeoutMs))
-      : Math.min(10000, Math.max(3000, timeoutSeconds * 1000 + 1000));
+      : DEFAULT_OPENSSL_REQUEST_TIMEOUT_MS;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
 
