@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type {
   OrgScanActivityPayload,
   ScanActivityBatch,
+  ScanHistoryCategory,
   ScanActivityItem,
   ScanBatchStatus,
   ScanBatchType,
@@ -108,31 +109,68 @@ function toBatch(batch: BatchRow, scans: ScanRow[]): ScanActivityBatch {
   };
 }
 
-function toHistoryEntry(batch: ScanActivityBatch, scans: ScanRow[]): ScanHistoryEntry {
-  const dnsExpiredAssets = scans.reduce((count, scan) => {
-    if (scan.status !== "completed" || !scan.resultData) return count;
-    const parsed = parseOpenSSLScanResult(scan.resultData);
-    return parsed.summary?.dnsMissing ? count + 1 : count;
-  }, 0);
+function isTimeoutFailure(resultData: string | null) {
+  if (!resultData) return false;
 
-  const completedAssets = batch.items.filter((item) => item.status === "completed").length;
-  const failures = scans
-    .filter((scan) => scan.status === "failed")
-    .map((scan) => ({
-      scanId: scan.id,
-      assetId: scan.assetId,
-      assetValue: scan.assetValue,
-      error: extractError(scan.resultData),
-      createdAt: scan.createdAt.toISOString(),
-      completedAt: scan.completedAt ? scan.completedAt.toISOString() : null,
-    }))
+  try {
+    const parsed = JSON.parse(resultData);
+    if (parsed?.timeout === true) return true;
+    const errorText =
+      typeof parsed?.error === "string"
+        ? parsed.error
+        : typeof parsed?.detail === "string"
+          ? parsed.detail
+          : typeof parsed === "string"
+            ? parsed
+            : null;
+
+    return Boolean(errorText && /timeout|timed out|target not responding|port not open/i.test(errorText));
+  } catch {
+    return /timeout|timed out|target not responding|port not open/i.test(resultData);
+  }
+}
+
+function classifyHistoryScan(scan: ScanRow): ScanHistoryCategory | null {
+  if (scan.status === "completed") {
+    const parsed = parseOpenSSLScanResult(scan.resultData);
+    return parsed.summary?.dnsMissing ? "dnsExpired" : "passed";
+  }
+
+  if (scan.status === "failed") {
+    return isTimeoutFailure(scan.resultData) ? "timeout" : "failed";
+  }
+
+  return null;
+}
+
+function toHistoryEntry(batch: ScanActivityBatch, scans: ScanRow[]): ScanHistoryEntry {
+  const items = scans
+    .map((scan) => {
+      const category = classifyHistoryScan(scan);
+      if (!category) return null;
+
+      return {
+        scanId: scan.id,
+        assetId: scan.assetId,
+        assetValue: scan.assetValue,
+        category,
+        error: extractError(scan.resultData),
+        createdAt: scan.createdAt.toISOString(),
+        completedAt: scan.completedAt ? scan.completedAt.toISOString() : null,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .sort((left, right) => {
       const leftTime = new Date(left.completedAt || left.createdAt).getTime();
       const rightTime = new Date(right.completedAt || right.createdAt).getTime();
       return rightTime - leftTime;
     });
-  const failedAssets = failures.length;
-  const successfulAssets = Math.max(0, completedAssets - dnsExpiredAssets);
+
+  const passedAssets = items.filter((item) => item.category === "passed").length;
+  const timeoutAssets = items.filter((item) => item.category === "timeout").length;
+  const dnsExpiredAssets = items.filter((item) => item.category === "dnsExpired").length;
+  const failedAssets = items.filter((item) => item.category === "failed").length;
+  const failures = items.filter((item) => item.category === "timeout" || item.category === "failed");
 
   const startedAtMs = batch.startedAt ? new Date(batch.startedAt).getTime() : null;
   const completedAtMs = batch.completedAt ? new Date(batch.completedAt).getTime() : null;
@@ -149,10 +187,12 @@ function toHistoryEntry(batch: ScanActivityBatch, scans: ScanRow[]): ScanHistory
     startedAt: batch.startedAt,
     completedAt: batch.completedAt,
     totalAssets: batch.totalAssets,
-    successfulAssets,
+    passedAssets,
+    timeoutAssets,
     failedAssets,
     dnsExpiredAssets,
     durationSeconds,
+    items,
     failures,
   };
 }
@@ -364,12 +404,12 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
       `UPDATE "asset_scan"
        SET
          status = 'cancelled',
-         "resultData" = COALESCE("resultData", $3),
-         "completedAt" = COALESCE("completedAt", $4)
+         "resultData" = COALESCE("resultData", $2),
+         "completedAt" = COALESCE("completedAt", $3)
        WHERE "batchId" = $1
-         AND status IN ('pending', 'running')`,
+         AND status IN ('pending', 'running')
+       RETURNING "assetId"`,
       batchId,
-      orgId,
       cancellationPayload,
       now
     );

@@ -17,9 +17,11 @@ import {
   Clock,
   Lock,
   Calendar,
+  Square,
+  Telescope,
   Zap,
 } from "lucide-react";
-import { formatDistanceToNow } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import { parseOpenSSLScanResult } from "@/lib/openssl-scan";
 import { useScanActivity } from "@/components/scan-activity-provider";
 
@@ -54,7 +56,26 @@ function formatRelativeTime(value: string | null | undefined) {
   if (!value) return "Unknown";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Unknown";
-  return formatDistanceToNow(date, { addSuffix: true });
+
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) return format(date, "dd/MM/yyyy, HH:mm");
+
+  const diffMinutes = Math.floor(diffMs / 60000);
+  if (diffMinutes < 1) return "just now";
+  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+
+  const diffHours = Math.floor(diffMinutes / 60);
+  const remainingMinutes = diffMinutes % 60;
+  if (diffHours < 24) {
+    return remainingMinutes > 0 ? `${diffHours}h ${remainingMinutes}m ago` : `${diffHours}h ago`;
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) {
+    return diffDays === 1 ? "1 day ago" : `${diffDays} days ago`;
+  }
+
+  return format(date, "dd/MM/yyyy, HH:mm");
 }
 
 export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningProps) {
@@ -677,7 +698,7 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                         data-tip="Open Explorer"
                         className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] text-[#5a3500] shadow-sm transition-all hover:brightness-105"
                       >
-                        <Search className="h-4 w-4" />
+                        <Telescope className="h-4 w-4" />
                       </Link>
                     )}
                     {canScan && activeBatch && (
@@ -685,9 +706,9 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                         onClick={() => void handleStopBatch(activeBatch.id)}
                         disabled={isStoppingActiveBatch}
                         data-tip="Stop Active Scan"
-                        className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full border border-red-200 bg-red-50 text-red-700 transition-all hover:bg-red-100 disabled:opacity-50"
+                        className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#991b1b] text-white shadow-[0_12px_28px_rgba(127,29,29,0.28)] transition-all hover:bg-[#7f1d1d] disabled:opacity-50"
                       >
-                        {isStoppingActiveBatch ? <Loader2 className="h-4 w-4 animate-spin" /> : <AlertTriangle className="h-4 w-4" />}
+                        {isStoppingActiveBatch ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
                       </button>
                     )}
                     {canScan && (
@@ -721,9 +742,9 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                 {isAdmin && (
                   <Link
                     href={`/app/${org.slug}/explore`}
-                    className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] px-5 py-2 text-xs font-extrabold uppercase tracking-wider text-[#5a3500] shadow-sm transition-all hover:brightness-105"
+                    className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] px-5 py-2 text-sm font-bold text-[#5a3500] shadow-sm transition-all hover:brightness-105"
                   >
-                    <Search className="h-3.5 w-3.5" />
+                    <Telescope className="h-4 w-4" />
                     Open Explorer
                   </Link>
                 )}
@@ -733,12 +754,12 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                     <button
                       onClick={() => void handleStopBatch(activeBatch.id)}
                       disabled={isStoppingActiveBatch}
-                      className="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-5 py-2.5 text-sm font-bold text-red-700 transition-all hover:bg-red-100 disabled:opacity-50"
+                      className="inline-flex items-center gap-2 rounded-full bg-[#991b1b] px-5 py-2.5 text-sm font-bold text-white shadow-[0_16px_34px_rgba(127,29,29,0.24)] transition-all hover:bg-[#7f1d1d] disabled:opacity-50"
                     >
                       {isStoppingActiveBatch ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
                       ) : (
-                        <AlertTriangle className="w-4 h-4" />
+                        <Square className="w-4 h-4" />
                       )}
                       Stop Active Scan
                     </button>
@@ -944,7 +965,7 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                       : "not scanned yet";
             const statusTime = isQueued || isRunning
               ? task?.createdAt || null
-              : (asset.latestScan?.completedAt || asset.latestScan?.createdAt || asset.lastScanDate || null);
+              : (asset.lastScanDate || asset.latestScan?.completedAt || asset.latestScan?.createdAt || null);
             const isExpanded = expandedAssetId === asset.id;
             const isSelected = selectedAssetIds.includes(asset.id);
 

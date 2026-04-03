@@ -22,7 +22,7 @@ import {
 
 export default function LandingPage() {
   const [isScrolled, setIsScrolled] = useState(false);
-  const { data: sessionData } = useSession();
+  const { data: sessionData, isPending } = useSession();
   const isLoggedIn = !!sessionData?.session;
 
   const domains = [
@@ -161,7 +161,9 @@ export default function LandingPage() {
           </div>
 
           <div>
-            {isLoggedIn ? (
+            {isPending ? (
+              <div className="w-[100px] h-[40px] bg-black/10 animate-pulse rounded-full" />
+            ) : isLoggedIn ? (
               <Link
                 href="/app"
                 className="group flex items-center gap-2 px-6 py-2.5 bg-[#8B0000] text-white text-sm font-semibold rounded-full hover:bg-[#730000] shadow-md shadow-[#8B0000]/20 transition-all"
@@ -431,7 +433,9 @@ export default function LandingPage() {
               Proactively identify deprecated cryptography algorithms, measure your transition readiness, and effortlessly generate a CertIn-compliant Cryptographic Bill of Materials (CBOM) for your organization from one centralized hub.
             </p>
 
-            {isLoggedIn ? (
+            {isPending ? (
+              <div className="w-[180px] h-[60px] bg-[#8B0000]/10 animate-pulse rounded-xl" />
+            ) : isLoggedIn ? (
               <Link
                 href="/app"
                 className="group flex items-center justify-center gap-2 px-8 py-4 bg-[#8B0000] text-white rounded-xl text-lg font-bold shadow-xl shadow-[#8B0000]/30 hover:-translate-y-1 hover:bg-[#730000] transition-all"
@@ -614,7 +618,12 @@ export default function LandingPage() {
               </div>
             </div>
 
-            {isLoggedIn ? (
+            {isPending ? (
+              <div className="flex flex-col sm:flex-row items-center gap-4 w-full justify-center">
+                <div className="w-full sm:w-[220px] h-[52px] bg-[#8B0000]/10 animate-pulse rounded-xl" />
+                <div className="w-full sm:w-[120px] h-[52px] bg-white/40 animate-pulse rounded-xl" />
+              </div>
+            ) : isLoggedIn ? (
               <Link
                 href="/app"
                 className="group flex items-center justify-center gap-2 px-8 py-3.5 bg-[#8B0000] text-white rounded-xl font-semibold shadow-xl shadow-[#8B0000]/30 hover:bg-[#730000] hover:-translate-y-0.5 transition-all"

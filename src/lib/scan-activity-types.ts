@@ -1,6 +1,7 @@
 export type ScanBatchType = "single" | "group" | "full";
 export type ScanBatchStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type ScanItemStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type ScanHistoryCategory = "passed" | "timeout" | "dnsExpired" | "failed";
 
 export interface ScanInitiator {
   id: string;
@@ -55,10 +56,20 @@ export interface ScanHistoryEntry {
   startedAt: string | null;
   completedAt: string | null;
   totalAssets: number;
-  successfulAssets: number;
+  passedAssets: number;
+  timeoutAssets: number;
   failedAssets: number;
   dnsExpiredAssets: number;
   durationSeconds: number | null;
+  items: Array<{
+    scanId: string;
+    assetId: string;
+    assetValue: string;
+    category: ScanHistoryCategory;
+    error: string | null;
+    createdAt: string;
+    completedAt: string | null;
+  }>;
   failures: Array<{
     scanId: string;
     assetId: string;

@@ -19,7 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { useScanActivity } from "@/components/scan-activity-provider";
-import type { ScanActivityBatch, ScanActivityItem } from "@/lib/scan-activity-types";
+import type { ScanActivityBatch, ScanActivityItem, ScanHistoryCategory, ScanHistoryEntry } from "@/lib/scan-activity-types";
 
 function batchLabel(type: ScanActivityBatch["type"]) {
   if (type === "full") return "Full Scan";
@@ -125,6 +125,42 @@ function streamChipTone(streamStatus: "idle" | "connecting" | "connected" | "err
     chip: "border-stone-200 bg-stone-50 text-stone-600",
     dot: "bg-stone-400",
     label: "Paused",
+  };
+}
+
+function historyCategoryMeta(category: ScanHistoryCategory) {
+  if (category === "passed") {
+    return {
+      label: "Passed",
+      tone: "bg-emerald-100 text-emerald-700",
+      countTone: "text-emerald-700",
+      empty: "No passed assets in this batch.",
+    };
+  }
+
+  if (category === "timeout") {
+    return {
+      label: "Timeout",
+      tone: "bg-amber-100 text-amber-700",
+      countTone: "text-amber-700",
+      empty: "No timeout results in this batch.",
+    };
+  }
+
+  if (category === "dnsExpired") {
+    return {
+      label: "DNS Expired",
+      tone: "bg-rose-100 text-rose-700",
+      countTone: "text-rose-700",
+      empty: "No DNS-expired assets in this batch.",
+    };
+  }
+
+  return {
+    label: "Failed",
+    tone: "bg-red-100 text-red-700",
+    countTone: "text-red-700",
+    empty: "No failed assets in this batch.",
   };
 }
 
@@ -361,6 +397,124 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
   );
 }
 
+function HistoryBatchSection({ entry }: { entry: ScanHistoryEntry }) {
+  const [activeFilter, setActiveFilter] = useState<ScanHistoryCategory>(() => {
+    if (entry.passedAssets > 0) return "passed";
+    if (entry.timeoutAssets > 0) return "timeout";
+    if (entry.dnsExpiredAssets > 0) return "dnsExpired";
+    return "failed";
+  });
+
+  useEffect(() => {
+    if (activeFilter === "passed" && entry.passedAssets > 0) return;
+    if (activeFilter === "timeout" && entry.timeoutAssets > 0) return;
+    if (activeFilter === "dnsExpired" && entry.dnsExpiredAssets > 0) return;
+    if (activeFilter === "failed" && entry.failedAssets > 0) return;
+
+    if (entry.passedAssets > 0) {
+      setActiveFilter("passed");
+    } else if (entry.timeoutAssets > 0) {
+      setActiveFilter("timeout");
+    } else if (entry.dnsExpiredAssets > 0) {
+      setActiveFilter("dnsExpired");
+    } else {
+      setActiveFilter("failed");
+    }
+  }, [activeFilter, entry.dnsExpiredAssets, entry.failedAssets, entry.passedAssets, entry.timeoutAssets]);
+
+  const filterCounts: Record<ScanHistoryCategory, number> = {
+    passed: entry.passedAssets,
+    timeout: entry.timeoutAssets,
+    dnsExpired: entry.dnsExpiredAssets,
+    failed: entry.failedAssets,
+  };
+
+  const visibleItems = entry.items.filter((item) => item.category === activeFilter);
+  const activeMeta = historyCategoryMeta(activeFilter);
+
+  const filters: ScanHistoryCategory[] = ["passed", "timeout", "dnsExpired", "failed"];
+
+  return (
+    <section className="rounded-[1.35rem] border border-slate-200/70 bg-white p-5 shadow-sm">
+      <div className="mt-4 flex flex-wrap gap-2">
+        {filters.map((filter) => {
+          const meta = historyCategoryMeta(filter);
+          const isActive = filter === activeFilter;
+          return (
+            <button
+              key={filter}
+              type="button"
+              onClick={() => setActiveFilter(filter)}
+              className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-semibold transition ${
+                isActive
+                  ? "border-blue-700/20 bg-blue-700 text-white"
+                  : "border-slate-200 bg-white text-[#8a5d33] hover:bg-slate-50"
+              }`}
+            >
+              <span>{meta.label}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                isActive ? "bg-white/20 text-white" : meta.tone
+              }`}>
+                {filterCounts[filter]}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {visibleItems.length === 0 ? (
+        <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-8 text-center">
+          <p className="text-sm font-bold text-[#8a5d33]/75">{activeMeta.empty}</p>
+        </div>
+      ) : (
+        <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200/80 bg-white">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="bg-slate-50 text-left">
+                <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#6b0000]">Asset</th>
+                <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#6b0000]">Updated</th>
+              </tr>
+            </thead>
+          </table>
+          <div className="max-h-[360px] overflow-y-auto">
+            <table className="w-full border-collapse">
+              <tbody>
+                {visibleItems.map((item, index) => {
+                  const when = formatWhenStacked(item.completedAt || item.createdAt);
+                  return (
+                    <tr
+                      key={item.scanId}
+                      className={`border-t border-slate-200/80 align-top transition-colors hover:bg-slate-50 ${
+                        index % 2 === 0 ? "bg-white" : "bg-slate-50/45"
+                      }`}
+                    >
+                      <td className="px-4 py-3 align-top">
+                        <p className="text-xl font-black leading-snug text-[#3d200a]">{item.assetValue}</p>
+                        {item.category === "dnsExpired" && (
+                          <p className="mt-1 text-xs font-semibold text-rose-700">
+                            This domain no longer resolves in DNS.
+                          </p>
+                        )}
+                        {(item.category === "timeout" || item.category === "failed") && item.error && (
+                          <p className="mt-1 text-xs font-semibold text-red-700">{item.error}</p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <p className="text-sm font-semibold text-[#8a5d33]/90">{when.absolute}</p>
+                        <p className={`mt-0.5 text-sm font-semibold ${activeMeta.countTone}`}>{when.relative}</p>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function ScanActivityMonitor({
   orgId,
   orgSlug,
@@ -455,7 +609,6 @@ export default function ScanActivityMonitor({
   const shouldShowHistoryPanel = hasActiveSharedScan ? showHistoryPanel : true;
   const shouldShowLiveScanPanel = hasActiveSharedScan && !showHistoryPanel;
   const historyEntries = activity?.recentHistory || [];
-  const historyBatchesById = new Map((activity?.recentHistoryBatches || []).map((batch) => [batch.id, batch]));
   const headerActionsHideEnter = 72;
   const headerActionsHideExit = 26;
   const headerCompactEnter = 104;
@@ -1058,8 +1211,8 @@ export default function ScanActivityMonitor({
                             </button>
                             {showHistoryInfoTooltip && (
                               <div className="absolute left-0 top-10 z-20 w-80 rounded-xl border border-[#8a5d33]/28 bg-white/95 p-3 text-xs font-medium leading-relaxed text-[#5b3a1f] shadow-xl backdrop-blur-sm">
-                                <p>Shows recent single, group, and full scan batches with status, timing, and asset outcomes.</p>
-                                <p className="mt-1">Open any entry to inspect detailed batch progress and all failures captured in that run.</p>
+                                <p>Shows recent single, group, and full scan batches with timing and categorized asset outcomes.</p>
+                                <p className="mt-1">Open any entry to inspect the passed, timeout, DNS expired, and failed assets from that run.</p>
                               </div>
                             )}
                           </div>
@@ -1090,7 +1243,13 @@ export default function ScanActivityMonitor({
                               </div>
                               <div className="flex items-center gap-2">
                                 <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
-                                  Passed: {entry.successfulAssets}
+                                  Passed: {entry.passedAssets}
+                                </span>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                                  Timeout: {entry.timeoutAssets}
+                                </span>
+                                <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                                  DNS Expired: {entry.dnsExpiredAssets}
                                 </span>
                                 <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
                                   Failed: {entry.failedAssets}
@@ -1103,56 +1262,30 @@ export default function ScanActivityMonitor({
                               </div>
                             </button>
                             <div className="scan-history-expand">
-                              {historyBatchesById.get(entry.batchId) ? (
-                                <div className="scan-history-main">
-                                  <BatchSection batch={historyBatchesById.get(entry.batchId)!} />
-                                </div>
-                              ) : (
-                                <div className="scan-history-main grid grid-cols-2 gap-3 sm:grid-cols-4">
+                              <div className="scan-history-main">
+                                <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
                                   <div className="rounded-xl border border-amber-500/10 bg-white px-3 py-2">
-                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[#8a5d33]/65">Time</p>
+                                    <p className="text-[10px] font-extrabold uppercase tracking-wide text-[#6b0000]">Time</p>
                                     <p className="mt-1 text-sm font-black text-[#3d200a]">{formatDuration(entry.durationSeconds)}</p>
                                   </div>
                                   <div className="rounded-xl border border-amber-500/10 bg-white px-3 py-2">
-                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[#8a5d33]/65">DNS Expired</p>
-                                    <p className="mt-1 text-sm font-black text-amber-700">{entry.dnsExpiredAssets}</p>
+                                    <p className="text-[10px] font-extrabold uppercase tracking-wide text-[#6b0000]">Passed</p>
+                                    <p className="mt-1 text-sm font-black text-emerald-700">{entry.passedAssets}</p>
                                   </div>
                                   <div className="rounded-xl border border-amber-500/10 bg-white px-3 py-2">
-                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[#8a5d33]/65">Failed</p>
+                                    <p className="text-[10px] font-extrabold uppercase tracking-wide text-[#6b0000]">Timeout</p>
+                                    <p className="mt-1 text-sm font-black text-amber-700">{entry.timeoutAssets}</p>
+                                  </div>
+                                  <div className="rounded-xl border border-amber-500/10 bg-white px-3 py-2">
+                                    <p className="text-[10px] font-extrabold uppercase tracking-wide text-[#6b0000]">DNS Expired</p>
+                                    <p className="mt-1 text-sm font-black text-rose-700">{entry.dnsExpiredAssets}</p>
+                                  </div>
+                                  <div className="rounded-xl border border-amber-500/10 bg-white px-3 py-2">
+                                    <p className="text-[10px] font-extrabold uppercase tracking-wide text-[#6b0000]">Failed</p>
                                     <p className="mt-1 text-sm font-black text-red-700">{entry.failedAssets}</p>
                                   </div>
-                                  <div className="rounded-xl border border-amber-500/10 bg-white px-3 py-2">
-                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-[#8a5d33]/65">Successful</p>
-                                    <p className="mt-1 text-sm font-black text-emerald-700">{entry.successfulAssets}</p>
-                                  </div>
                                 </div>
-                              )}
-
-                              <div className="mt-3 rounded-xl border border-red-200/70 bg-red-50/70 p-3">
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="flex items-center gap-2">
-                                    <AlertTriangle className="h-4 w-4 text-red-600" />
-                                    <p className="text-sm font-black text-red-800">All Failures</p>
-                                  </div>
-                                  <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-red-700">
-                                    {entry.failures.length}
-                                  </span>
-                                </div>
-                                {entry.failures.length === 0 ? (
-                                  <p className="mt-2 text-xs font-semibold text-red-800/75">No failed items in this scan batch.</p>
-                                ) : (
-                                  <div className="mt-2 max-h-56 space-y-2 overflow-y-auto pr-1">
-                                    {entry.failures.map((failure) => (
-                                      <div key={failure.scanId} className="rounded-lg border border-red-200 bg-white/90 px-3 py-2">
-                                        <p className="truncate text-sm font-black text-[#3d200a]">{failure.assetValue}</p>
-                                        <p className="mt-1 text-[11px] font-semibold text-[#8a5d33]/70">
-                                          {formatWhen(failure.completedAt || failure.createdAt)}
-                                        </p>
-                                        <p className="mt-1 text-xs font-semibold text-red-700">{failure.error || "Scan failed."}</p>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
+                                <HistoryBatchSection entry={entry} />
                               </div>
                             </div>
                           </div>
@@ -1324,13 +1457,13 @@ export default function ScanActivityMonitor({
         }
 
         .scan-history-accordion.is-open {
-          background-color: #6f0008;
+          background-color: #0f2748;
           background-image:
             linear-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px),
             linear-gradient(90deg, rgba(255, 255, 255, 0.1) 1px, transparent 1px),
-            linear-gradient(180deg, rgba(95, 0, 10, 0) 0%, rgba(55, 0, 8, 0.36) 100%);
+            linear-gradient(180deg, rgba(28, 68, 122, 0) 0%, rgba(8, 22, 45, 0.42) 100%);
           background-size: 26px 26px, 26px 26px, 100% 100%;
-          border-color: rgba(255, 226, 226, 0.45);
+          border-color: rgba(191, 219, 254, 0.45);
         }
 
         .scan-history-accordion.is-open .scan-history-chevron {
