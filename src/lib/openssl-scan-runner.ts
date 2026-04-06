@@ -239,11 +239,20 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
       );
 
       if (updatedScanRows.length > 0) {
+        const resolvedIp =
+          parsed && typeof parsed === "object" && "resolved_ip" in (parsed as Record<string, unknown>)
+            ? ((parsed as Record<string, unknown>).resolved_ip as string | null | undefined) ?? null
+            : null;
         await tx.$executeRawUnsafe(
           `UPDATE "asset"
-           SET "scanStatus" = 'completed', "lastScanDate" = $1
-           WHERE id = $2`,
+           SET "scanStatus" = 'completed',
+               "lastScanDate" = $1,
+               "resolvedIp" = COALESCE($2, "resolvedIp"),
+               "openPorts" = COALESCE("openPorts", $3)
+           WHERE id = $4`,
           now,
+          resolvedIp,
+          JSON.stringify([{ number: 443, protocol: "tcp" }]),
           updatedScanRows[0].assetId
         );
       }
@@ -253,12 +262,21 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
       if (parsed && typeof parsed === "object") {
         const summary = deriveOpenSSLScanSummary(parsed as any);
         const assetStatus = summary.dnsMissing ? "expired" : "completed";
+        const resolvedIp =
+          "resolved_ip" in (parsed as Record<string, unknown>)
+            ? ((parsed as Record<string, unknown>).resolved_ip as string | null | undefined) ?? null
+            : null;
         await prisma.$executeRawUnsafe(
           `UPDATE "asset"
-           SET "scanStatus" = $1, "lastScanDate" = $2
-           WHERE id = $3`,
+           SET "scanStatus" = $1,
+               "lastScanDate" = $2,
+               "resolvedIp" = COALESCE($3, "resolvedIp"),
+               "openPorts" = COALESCE("openPorts", $4)
+           WHERE id = $5`,
           assetStatus,
           new Date(),
+          resolvedIp,
+          JSON.stringify([{ number: 443, protocol: "tcp" }]),
           input.assetId
         );
       }

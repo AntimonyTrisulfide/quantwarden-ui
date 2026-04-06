@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 
@@ -176,15 +177,9 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
       return NextResponse.json({ error: "Invitation not found" }, { status: 404 });
     }
 
-    // Must be owner or admin of the given organization to delete an invite
-    const memberRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-      `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-      invite.organizationId,
-      session.user.id
-    );
-
-    if (memberRows.length === 0 || (memberRows[0].role !== "owner" && memberRows[0].role !== "admin")) {
-      return NextResponse.json({ error: "Forbidden: Only owners and admins can delete invites." }, { status: 403 });
+    const access = await getOrgMemberAccess(invite.organizationId, session.user.id);
+    if (!access?.canManageTeam) {
+      return NextResponse.json({ error: "Forbidden: You do not have team management permission." }, { status: 403 });
     }
 
     await prisma.$executeRawUnsafe(

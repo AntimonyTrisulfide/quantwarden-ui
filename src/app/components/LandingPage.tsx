@@ -49,6 +49,7 @@ export default function LandingPage() {
 
   useEffect(() => {
     let lastTime = performance.now();
+    let pauseUntil = 0;
     let reqId: number;
 
     const loop = (time: number) => {
@@ -56,9 +57,19 @@ export default function LandingPage() {
       lastTime = time;
 
       if (!isHoveredRef.current) {
-        posRef.current += dirRef.current * 0.03666 * dt;
-        if (posRef.current <= -5) { posRef.current = -5; dirRef.current = 1; }
-        if (posRef.current >= 105) { posRef.current = 105; dirRef.current = -1; }
+        if (time >= pauseUntil) {
+          posRef.current += dirRef.current * 0.018 * dt; // Slower sweep (was 0.03666)
+          if (posRef.current <= -5) { 
+            posRef.current = -5; 
+            dirRef.current = 1; 
+            pauseUntil = time + 1500; // Delay before returning
+          }
+          if (posRef.current >= 105) { 
+            posRef.current = 105; 
+            dirRef.current = -1; 
+            pauseUntil = time + 1500; // Delay before returning
+          }
+        }
       }
 
       if (clipLayerRef.current) clipLayerRef.current.style.clipPath = `inset(0 0 0 ${posRef.current}%)`;

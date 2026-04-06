@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type {
   OrgScanActivityPayload,
   ScanActivityBatch,
+  ScanEngine,
   ScanHistoryCategory,
   ScanActivityItem,
   ScanBatchStatus,
@@ -10,14 +11,18 @@ import type {
   ScanHistoryEntry,
 } from "@/lib/scan-activity-types";
 import { parseOpenSSLScanResult } from "@/lib/openssl-scan";
+import { isPortDiscoveryTimeoutResult, parsePortDiscoveryResponse } from "@/lib/port-discovery";
 
 export const MAX_OPENSSL_SCAN_CONCURRENCY = 5;
+export const MAX_PORT_DISCOVERY_SCAN_CONCURRENCY = 2;
 
 interface BatchRow {
   id: string;
   organizationId: string;
+  engine: ScanEngine;
   type: ScanBatchType;
   status: ScanBatchStatus;
+  configSnapshot: string | null;
   totalAssets: number;
   completedAssets: number;
   failedAssets: number;
@@ -34,6 +39,8 @@ interface ScanRow {
   batchId: string | null;
   assetId: string;
   assetValue: string;
+  assetType: string;
+  type: ScanEngine;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   resultData: string | null;
   createdAt: Date;
@@ -45,7 +52,9 @@ export interface ClaimedScanItem {
   batchId: string;
   assetId: string;
   assetValue: string;
+  engine: ScanEngine;
   batchType: ScanBatchType;
+  configSnapshot: string | null;
 }
 
 function extractError(resultData: string | null) {
@@ -87,6 +96,7 @@ function toBatch(batch: BatchRow, scans: ScanRow[]): ScanActivityBatch {
   return {
     id: batch.id,
     organizationId: batch.organizationId,
+    engine: batch.engine,
     type: batch.type,
     status: batch.status,
     totalAssets,
@@ -131,6 +141,25 @@ function isTimeoutFailure(resultData: string | null) {
 }
 
 function classifyHistoryScan(scan: ScanRow): ScanHistoryCategory | null {
+  if (scan.type === "portDiscovery") {
+    const parsed = parsePortDiscoveryResponse(scan.resultData);
+
+    if (scan.status === "completed") {
+      const hasResolvedAddresses = Array.isArray(parsed?.resolved_addresses) && parsed.resolved_addresses.length > 0;
+      if (scan.assetType === "domain" && !hasResolvedAddresses) {
+        return "dnsExpired";
+      }
+
+      return "passed";
+    }
+
+    if (scan.status === "failed") {
+      return isPortDiscoveryTimeoutResult(scan.resultData) ? "timeout" : "failed";
+    }
+
+    return null;
+  }
+
   if (scan.status === "completed") {
     const parsed = parseOpenSSLScanResult(scan.resultData);
     return parsed.summary?.dnsMissing ? "dnsExpired" : "passed";
@@ -181,6 +210,7 @@ function toHistoryEntry(batch: ScanActivityBatch, scans: ScanRow[]): ScanHistory
 
   return {
     batchId: batch.id,
+    engine: batch.engine,
     type: batch.type,
     status: batch.status,
     createdAt: batch.createdAt,
@@ -231,8 +261,10 @@ export async function refreshScanBatch(batchId: string) {
       RETURNING
         b.id,
         b."organizationId",
+        b.engine,
         b.type,
         b.status,
+        b."configSnapshot",
         b."totalAssets",
         b."completedAssets",
         b."failedAssets",
@@ -253,8 +285,10 @@ export async function getActiveScanLock(orgId: string) {
     `SELECT
         b.id,
         b."organizationId",
+        b.engine,
         b.type,
         b.status,
+        b."configSnapshot",
         b."totalAssets",
         b."completedAssets",
         b."failedAssets",
@@ -267,7 +301,6 @@ export async function getActiveScanLock(orgId: string) {
       FROM "asset_scan_batch" b
       INNER JOIN "user" u ON u.id = b."initiatedByUserId"
       WHERE b."organizationId" = $1
-        AND b.type IN ('group', 'full')
         AND b.status IN ('queued', 'running')
       ORDER BY b."createdAt" DESC
       LIMIT 1`,
@@ -285,20 +318,6 @@ export async function claimNextPendingScan(orgId: string): Promise<ClaimedScanIt
       orgId
     );
 
-    const runningRows = await tx.$queryRawUnsafe<{ running: number }[]>(
-      `SELECT COUNT(*)::int as running
-       FROM "asset_scan" s
-       INNER JOIN "asset_scan_batch" b ON b.id = s."batchId"
-       WHERE b."organizationId" = $1
-         AND b.status IN ('queued', 'running')
-         AND s.status = 'running'`,
-      orgId
-    );
-
-    if ((runningRows[0]?.running || 0) >= MAX_OPENSSL_SCAN_CONCURRENCY) {
-      return null;
-    }
-
     const claimRows = await tx.$queryRawUnsafe<ClaimedScanItem[]>(
       `WITH next_scan AS (
           SELECT
@@ -306,7 +325,9 @@ export async function claimNextPendingScan(orgId: string): Promise<ClaimedScanIt
             s."batchId" as "batchId",
             s."assetId" as "assetId",
             a.value as "assetValue",
-            b.type as "batchType"
+            b.engine as engine,
+            b.type as "batchType",
+            b."configSnapshot" as "configSnapshot"
           FROM "asset_scan" s
           INNER JOIN "asset_scan_batch" b ON b.id = s."batchId"
           INNER JOIN "asset" a ON a.id = s."assetId"
@@ -314,9 +335,13 @@ export async function claimNextPendingScan(orgId: string): Promise<ClaimedScanIt
             AND b.status IN ('queued', 'running')
             AND s.status = 'pending'
           ORDER BY
+            CASE b.engine
+              WHEN 'openssl' THEN 0
+              ELSE 1
+            END,
             CASE b.type
-              WHEN 'group' THEN 0
-              WHEN 'full' THEN 1
+              WHEN 'full' THEN 0
+              WHEN 'group' THEN 1
               ELSE 2
             END,
             b."createdAt" ASC,
@@ -333,7 +358,9 @@ export async function claimNextPendingScan(orgId: string): Promise<ClaimedScanIt
           next_scan."batchId",
           next_scan."assetId",
           next_scan."assetValue",
-          next_scan."batchType"`,
+          next_scan.engine,
+          next_scan."batchType",
+          next_scan."configSnapshot"`,
       orgId
     );
 
@@ -342,10 +369,36 @@ export async function claimNextPendingScan(orgId: string): Promise<ClaimedScanIt
     }
 
     const nextClaim = claimRows[0];
+    const runningRows = await tx.$queryRawUnsafe<{ running: number }[]>(
+      `SELECT COUNT(*)::int as running
+       FROM "asset_scan" s
+       INNER JOIN "asset_scan_batch" b ON b.id = s."batchId"
+       WHERE b."organizationId" = $1
+         AND b.engine = $2
+         AND b.status IN ('queued', 'running')
+         AND s.status = 'running'`,
+      orgId,
+      nextClaim.engine
+    );
+
+    const engineLimit =
+      nextClaim.engine === "portDiscovery"
+        ? MAX_PORT_DISCOVERY_SCAN_CONCURRENCY
+        : MAX_OPENSSL_SCAN_CONCURRENCY;
+
+    if ((runningRows[0]?.running || 0) >= engineLimit) {
+      await tx.$executeRawUnsafe(
+        `UPDATE "asset_scan" SET status = 'pending' WHERE id = $1`,
+        nextClaim.scanId
+      );
+      return null;
+    }
 
     await Promise.all([
       tx.$executeRawUnsafe(
-        `UPDATE "asset" SET "scanStatus" = 'scanning' WHERE id = $1`,
+        nextClaim.engine === "portDiscovery"
+          ? `UPDATE "asset" SET "portDiscoveryStatus" = 'scanning' WHERE id = $1`
+          : `UPDATE "asset" SET "scanStatus" = 'scanning' WHERE id = $1`,
         nextClaim.assetId
       ),
       tx.$executeRawUnsafe(
@@ -376,8 +429,10 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
       `SELECT
           b.id,
           b."organizationId",
+          b.engine,
           b.type,
           b.status,
+          b."configSnapshot",
           b."totalAssets",
           b."completedAssets",
           b."failedAssets",
@@ -437,6 +492,8 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
           s."batchId",
           s."assetId",
           a.value as "assetValue",
+          a.type as "assetType",
+          s.type,
           s.status,
           s."resultData",
           s."createdAt",
@@ -446,7 +503,7 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
         INNER JOIN "asset_scan_batch" b ON b.id = s."batchId"
         WHERE s."assetId" = $1
           AND b."organizationId" = $2
-          AND s.type = 'openssl'
+          AND s.type = $4
           AND s."batchId" <> $3
           AND s.status IN ('completed', 'failed')
         ORDER BY
@@ -455,32 +512,59 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
         LIMIT 1`,
       assetId,
       orgId,
-      batchId
+      batchId,
+      rows.batch.engine
     );
 
     const previousTerminal = previousTerminalRows[0] || null;
-    let restoredStatus: "idle" | "completed" | "failed" | "expired" = "idle";
-    let restoredLastScanDate: Date | null = null;
+    if (rows.batch.engine === "portDiscovery") {
+      let restoredStatus: "idle" | "completed" | "failed" | "expired" = "idle";
+      let restoredLastScanDate: Date | null = null;
 
-    if (previousTerminal) {
-      if (previousTerminal.status === "failed") {
-        restoredStatus = "failed";
-      } else {
-        const parsed = parseOpenSSLScanResult(previousTerminal.resultData);
-        restoredStatus = parsed.summary?.dnsMissing ? "expired" : "completed";
+      if (previousTerminal) {
+        if (previousTerminal.status === "failed") {
+          restoredStatus = isPortDiscoveryTimeoutResult(previousTerminal.resultData) ? "failed" : "failed";
+        } else {
+          const parsed = parsePortDiscoveryResponse(previousTerminal.resultData);
+          const hasResolvedAddresses = Array.isArray(parsed?.resolved_addresses) && parsed.resolved_addresses.length > 0;
+          restoredStatus = previousTerminal.assetType === "domain" && !hasResolvedAddresses ? "expired" : "completed";
+        }
+
+        restoredLastScanDate = previousTerminal.completedAt || previousTerminal.createdAt;
       }
 
-      restoredLastScanDate = previousTerminal.completedAt || previousTerminal.createdAt;
-    }
+      await prisma.$executeRawUnsafe(
+        `UPDATE "asset"
+         SET "portDiscoveryStatus" = $1, "lastPortDiscoveryDate" = $2
+         WHERE id = $3`,
+        restoredStatus,
+        restoredLastScanDate,
+        assetId
+      );
+    } else {
+      let restoredStatus: "idle" | "completed" | "failed" | "expired" = "idle";
+      let restoredLastScanDate: Date | null = null;
 
-    await prisma.$executeRawUnsafe(
-      `UPDATE "asset"
-       SET "scanStatus" = $1, "lastScanDate" = $2
-       WHERE id = $3`,
-      restoredStatus,
-      restoredLastScanDate,
-      assetId
-    );
+      if (previousTerminal) {
+        if (previousTerminal.status === "failed") {
+          restoredStatus = "failed";
+        } else {
+          const parsed = parseOpenSSLScanResult(previousTerminal.resultData);
+          restoredStatus = parsed.summary?.dnsMissing ? "expired" : "completed";
+        }
+
+        restoredLastScanDate = previousTerminal.completedAt || previousTerminal.createdAt;
+      }
+
+      await prisma.$executeRawUnsafe(
+        `UPDATE "asset"
+         SET "scanStatus" = $1, "lastScanDate" = $2
+         WHERE id = $3`,
+        restoredStatus,
+        restoredLastScanDate,
+        assetId
+      );
+    }
   }
 
   return rows.batch;
@@ -491,8 +575,10 @@ export async function getOrgScanActivity(orgId: string, canScan: boolean): Promi
     `SELECT
         b.id,
         b."organizationId",
+        b.engine,
         b.type,
         b.status,
+        b."configSnapshot",
         b."totalAssets",
         b."completedAssets",
         b."failedAssets",
@@ -523,6 +609,8 @@ export async function getOrgScanActivity(orgId: string, canScan: boolean): Promi
             s."batchId",
             s."assetId",
             a.value as "assetValue",
+            a.type as "assetType",
+            s.type,
             s.status,
             s."resultData",
             s."createdAt",
@@ -558,12 +646,13 @@ export async function getOrgScanActivity(orgId: string, canScan: boolean): Promi
     entry.failures.map((failure) => ({
       ...failure,
       batchId: entry.batchId,
+      engine: entry.engine,
       batchType: entry.type,
       batchStatus: entry.status,
     }))
   );
   const lockBatch = hydratedBatches.find(
-    (batch) => (batch.type === "group" || batch.type === "full") && (batch.status === "queued" || batch.status === "running")
+    (batch) => batch.status === "queued" || batch.status === "running"
   ) || null;
 
   return {
@@ -579,12 +668,19 @@ export async function getOrgScanActivity(orgId: string, canScan: boolean): Promi
       ? {
           active: true,
           batchId: lockBatch.id,
+          engine: lockBatch.engine,
           type: lockBatch.type,
           status: lockBatch.status,
           message:
-            lockBatch.type === "group"
-              ? "A group scan is running for this organization."
-              : "A full scan is running for this organization.",
+            lockBatch.engine === "portDiscovery"
+              ? lockBatch.type === "single"
+                ? "A port discovery scan is running for this organization."
+                : "A port discovery batch is running for this organization."
+              : lockBatch.type === "group"
+                ? "An OpenSSL group scan is running for this organization."
+                : lockBatch.type === "single"
+                  ? "An OpenSSL scan is running for this organization."
+                  : "An OpenSSL full scan is running for this organization.",
           initiatedAt: lockBatch.createdAt,
           initiatedBy: lockBatch.initiatedBy,
           percentComplete: lockBatch.percentComplete,
@@ -592,6 +688,7 @@ export async function getOrgScanActivity(orgId: string, canScan: boolean): Promi
       : {
           active: false,
           batchId: null,
+          engine: null,
           type: null,
           status: null,
           message: null,

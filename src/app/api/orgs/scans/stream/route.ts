@@ -2,18 +2,24 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { getOrgScanAccess } from "@/lib/org-scan-permissions";
-import type { OrgScanActivityPayload, ScanActivityBatch, ScanActivityItem } from "@/lib/scan-activity-types";
+import type { OrgScanActivityPayload, ScanActivityBatch, ScanActivityItem, ScanEngine } from "@/lib/scan-activity-types";
 import {
   cancelScanBatch,
   claimNextPendingScan,
   getOrgScanActivity,
   MAX_OPENSSL_SCAN_CONCURRENCY,
+  MAX_PORT_DISCOVERY_SCAN_CONCURRENCY,
 } from "@/lib/scan-batch-server";
 import {
   isOpenSSLRequestTimeoutError,
   isOpenSSLServiceUnavailableError,
   runOpenSSLScanItem,
 } from "@/lib/openssl-scan-runner";
+import {
+  isPortDiscoveryRequestTimeoutError,
+  isPortDiscoveryServiceUnavailableError,
+  runPortDiscoveryItem,
+} from "@/lib/port-discovery-runner";
 
 const ACTIVE_TICK_MS = 1500;
 const IDLE_TICK_MS = 10000;
@@ -27,6 +33,10 @@ export const maxDuration = 300;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function engineLabel(engine: ScanEngine | null) {
+  return engine === "portDiscovery" ? "Nmap API" : "OpenSSL";
 }
 
 function activityBatches(activity: OrgScanActivityPayload) {
@@ -112,6 +122,7 @@ export async function GET(req: NextRequest) {
       let lastServiceUnavailableEventAt = 0;
       let serviceUnavailableUntil = 0;
       let serviceUnavailableSince: number | null = null;
+      let serviceUnavailableEngine: ScanEngine | null = null;
       let serviceUnavailableShutdownAt: number | null = null;
       let lastServiceUnavailableCountdownAt = 0;
       let serviceShutdownTriggered = false;
@@ -122,7 +133,8 @@ export async function GET(req: NextRequest) {
         const remainingSeconds = Math.ceil(remainingMs / 1000);
 
         sendEvent("service_unavailable", {
-          message: "OpenSSL scanning endpoint appears unavailable. Live scans will auto-stop if service does not recover.",
+          engine: serviceUnavailableEngine,
+          message: `${engineLabel(serviceUnavailableEngine)} endpoint appears unavailable. Live scans will auto-stop if service does not recover.`,
           timestamp: now,
           remainingSeconds,
           shutdownAt: serviceUnavailableShutdownAt,
@@ -186,12 +198,13 @@ export async function GET(req: NextRequest) {
               const shutdownActivity = await getOrgScanActivity(orgId, scanAccess.canScan);
               emitActivityChanges(shutdownActivity);
               sendEvent("service_shutdown", {
-                message: "OpenSSL endpoint was unavailable for 30 seconds. Active scans were stopped automatically.",
+                engine: serviceUnavailableEngine,
+                message: `${engineLabel(serviceUnavailableEngine)} endpoint was unavailable for 30 seconds. Active scans were stopped automatically.`,
                 timestamp: now,
                 activity: shutdownActivity,
               });
               sendEvent("stream_error", {
-                message: "Live stream ended after OpenSSL outage timeout. Restart once service is reachable.",
+                message: `Live stream ended after ${engineLabel(serviceUnavailableEngine)} outage timeout. Restart once service is reachable.`,
               });
               stop();
               break;
@@ -205,7 +218,7 @@ export async function GET(req: NextRequest) {
 
           while (
             !closed &&
-            runningJobs.size < MAX_OPENSSL_SCAN_CONCURRENCY &&
+            runningJobs.size < MAX_OPENSSL_SCAN_CONCURRENCY + MAX_PORT_DISCOVERY_SCAN_CONCURRENCY &&
             now >= serviceUnavailableUntil
           ) {
             const claimed = await claimNextPendingScan(orgId);
@@ -213,38 +226,55 @@ export async function GET(req: NextRequest) {
 
             const job: Promise<void> = (async () => {
               try {
-                await runOpenSSLScanItem({
-                  orgId,
-                  assetId: claimed.assetId,
-                  scanId: claimed.scanId,
-                  batchId: claimed.batchId,
-                });
+                if (claimed.engine === "portDiscovery") {
+                  await runPortDiscoveryItem({
+                    orgId,
+                    assetId: claimed.assetId,
+                    scanId: claimed.scanId,
+                    batchId: claimed.batchId,
+                    configSnapshot: claimed.configSnapshot,
+                  });
+                } else {
+                  await runOpenSSLScanItem({
+                    orgId,
+                    assetId: claimed.assetId,
+                    scanId: claimed.scanId,
+                    batchId: claimed.batchId,
+                  });
+                }
 
                 if (serviceUnavailableSince) {
                   serviceUnavailableSince = null;
+                  serviceUnavailableEngine = null;
                   serviceUnavailableShutdownAt = null;
                   serviceShutdownTriggered = false;
                   sendEvent("service_recovered", {
-                    message: "OpenSSL endpoint recovered. Live scan processing resumed.",
+                    message: `${engineLabel(claimed.engine)} recovered. Live scan processing resumed.`,
                     timestamp: Date.now(),
                   });
                 }
               } catch (error) {
-                if (isOpenSSLRequestTimeoutError(error)) {
+                if (isOpenSSLRequestTimeoutError(error) || isPortDiscoveryRequestTimeoutError(error)) {
                   console.warn("SSE scan runner timeout:", (error as any)?.message || error);
                   sendEvent("scan_timeout", {
-                    message: "OpenSSL scan request timed out. Target may be slow or port may be unreachable.",
+                    engine: claimed.engine,
+                    message:
+                      claimed.engine === "portDiscovery"
+                        ? "Port discovery request timed out. Target may be slow or unreachable."
+                        : "OpenSSL scan request timed out. Target may be slow or port may be unreachable.",
                     timestamp: Date.now(),
                   });
-                } else if (isOpenSSLServiceUnavailableError(error)) {
+                } else if (isOpenSSLServiceUnavailableError(error) || isPortDiscoveryServiceUnavailableError(error)) {
                   console.error("SSE scan runner service unavailable:", error);
                   const now = Date.now();
                   if (!serviceUnavailableSince) {
                     serviceUnavailableSince = now;
+                    serviceUnavailableEngine = claimed.engine;
                     serviceUnavailableShutdownAt = now + SERVICE_UNAVAILABLE_SHUTDOWN_MS;
                     serviceShutdownTriggered = false;
                     lastServiceUnavailableCountdownAt = 0;
                   }
+                  serviceUnavailableEngine = claimed.engine;
                   serviceUnavailableUntil = Math.max(serviceUnavailableUntil, now + SERVICE_UNAVAILABLE_RETRY_COOLDOWN_MS);
                   if (now - lastServiceUnavailableEventAt >= SERVICE_UNAVAILABLE_EVENT_THROTTLE_MS) {
                     lastServiceUnavailableEventAt = now;

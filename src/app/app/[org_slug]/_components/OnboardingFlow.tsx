@@ -3,18 +3,28 @@
 import { useState, useEffect, useRef } from "react";
 import { Loader2, ArrowRight, ArrowLeft, Globe, Lock, Search, EyeOff, Plus, Trash2, Mail, Check, Copy, Info, ChevronDown, ChevronLeft, ChevronRight, Send, XCircle, CheckCircle2, Clock } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { getRoleStyle } from "@/lib/utils";
+
+const PRESET_COLORS = [
+  "#8B0000", // Crimson
+  "#ea580c", // Amber
+  "#059669", // Emerald
+  "#2563eb", // Blue
+  "#7c3aed", // Purple
+  "#db2777", // Pink
+  "#475569", // Slate
+  "#3d200a", // Dark Brown
+];
 
 // Custom Dropdown Component for fully color-coded options
 function RoleDropdown({ 
   currentRoleId, 
   roles, 
-  onChange, 
-  getRoleColorOptions 
+  onChange
 }: { 
   currentRoleId: string, 
   roles: any[], 
-  onChange: (id: string) => void,
-  getRoleColorOptions: (id: string, isOption?: boolean) => string 
+  onChange: (id: string) => void
 }) {
   const [isOpen, setIsOpen] = useState(false);
   
@@ -35,29 +45,39 @@ function RoleDropdown({
       <button 
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center justify-between gap-3 text-xs font-bold px-3 py-1.5 rounded-lg border outline-none cursor-pointer transition-colors w-[140px] ${getRoleColorOptions(currentRoleId)}`}
+        className="flex items-center justify-between gap-3 text-xs font-bold px-3 py-1.5 rounded-lg border outline-none cursor-pointer transition-colors w-[140px] hover:brightness-95"
+        style={getRoleStyle(currentRoleId, roles)}
       >
         <span className="truncate">{currentRole?.name || "Select Role"}</span>
         <ChevronDown className="w-3.5 h-3.5 shrink-0" />
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-amber-500/20 rounded-xl shadow-xl z-50 overflow-hidden flex flex-col p-1.5 animate-in fade-in zoom-in-95 duration-100">
-          <div className="px-2 pb-1.5 mb-1 text-[10px] font-bold text-[#8a5d33]/50 uppercase tracking-wider border-b border-amber-500/10">Select Role</div>
-          <div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto pr-1">
-            {roles.map(r => (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => {
-                  onChange(r.id);
-                  setIsOpen(false);
-                }}
-                className={`text-left text-xs font-bold px-3 py-2.5 rounded-lg transition-colors border ${getRoleColorOptions(r.id, true)}`}
-              >
-                {r.name}
-              </button>
-            ))}
+        <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-amber-500/20 rounded-xl shadow-xl z-50 overflow-hidden flex flex-col py-1.5 animate-in fade-in zoom-in-95 duration-100">
+          <div className="px-3 pb-1.5 pt-1 mb-1 text-[10px] font-bold text-[#8a5d33]/50 uppercase tracking-wider border-b border-amber-500/10">Select Role</div>
+          <div className="flex flex-col max-h-[200px] overflow-y-auto">
+            {roles.map(r => {
+              const style = getRoleStyle(r.id, roles);
+              return (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => {
+                    onChange(r.id);
+                    setIsOpen(false);
+                  }}
+                  className={`flex items-center justify-between text-left text-xs font-bold px-3 py-3 transition-colors border-b border-amber-500/10 last:border-b-0 ${
+                    r.id === currentRoleId ? "bg-amber-500/10" : "hover:bg-amber-500/5"
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span className="w-2 h-2 rounded-full ring-1 ring-black/10 shrink-0" style={{ backgroundColor: style.color }} />
+                    <span style={{ color: style.color }}>{r.name}</span>
+                  </div>
+                  {r.id === currentRoleId && <Check className="w-3.5 h-3.5" style={{ color: style.color }} />}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -208,6 +228,18 @@ export default function OnboardingFlow({ org }: { org: any }) {
   });
 
   const [roles, setRoles] = useState<any[]>(initialRoles);
+  const [activeColorPicker, setActiveColorPicker] = useState<string | null>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (!(e.target as Element).closest('.color-picker-container')) {
+        setActiveColorPicker(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   // Global State
   const [saving, setSaving] = useState(false);
@@ -301,6 +333,12 @@ export default function OnboardingFlow({ org }: { org: any }) {
     autoSave({ roles: newRoles });
   };
 
+  const handleRoleColorChange = (roleId: string, color: string) => {
+    const newRoles = roles.map(r => r.id === roleId ? { ...r, permissions: { ...r.permissions, color } } : r);
+    setRoles(newRoles);
+    autoSave({ roles: newRoles });
+  };
+
   const handleRemoveRole = (roleId: string) => {
     const newRoles = roles.filter(r => r.id !== roleId);
     setRoles(newRoles);
@@ -338,23 +376,6 @@ export default function OnboardingFlow({ org }: { org: any }) {
 
   const handleUpdateInviteRole = (email: string, roleId: string) => {
     setInvites(invites.map(inv => inv.email === email ? { ...inv, roleId } : inv));
-  };
-
-  const getRoleColorOptions = (roleId: string, isOption: boolean = false) => {
-    const role = roles.find(r => r.id === roleId);
-    // Base styles
-    if (!role) return "bg-amber-50 text-amber-800 border-amber-300";
-    
-    // In dropdown lists, we might want slightly different structural padding, but the colors run the same
-    if (role.name.toLowerCase().includes("admin")) {
-      return `bg-red-50 text-red-700 border-red-200 hover:bg-red-100 ${!isOption && 'border-red-300 bg-red-100'}`;
-    } else if (role.name.toLowerCase().includes("auditor")) {
-      return `bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 ${!isOption && 'border-emerald-300 bg-emerald-100'}`;
-    } else if (role.name.toLowerCase().includes("analyst")) {
-      return `bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100 ${!isOption && 'border-orange-300 bg-orange-100'}`;
-    } else {
-      return `bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100 ${!isOption && 'border-purple-300 bg-purple-100'}`;
-    }
   };
 
   const handleCopyCode = () => {
@@ -743,16 +764,57 @@ export default function OnboardingFlow({ org }: { org: any }) {
                     {roles.map((r) => (
                       <tr key={r.id} className="hover:bg-amber-500/5 transition-colors">
                         <td className="py-3 px-4">
-                          {r.isSystem ? (
-                            <span className="text-[#3d200a] font-bold">{r.name}</span>
-                          ) : (
-                            <input 
-                              type="text" 
-                              value={r.name} 
-                              onChange={(e) => handleUpdateRoleName(r.id, e.target.value)}
-                              className="bg-white border border-amber-500/30 rounded-lg px-2 py-1 text-[#3d200a] font-bold outline-none focus:ring-2 ring-[#8B0000]/40 w-full max-w-[150px]"
-                            />
-                          )}
+                          <div className="flex items-center gap-3 relative">
+                            <div className="relative color-picker-container">
+                              <button
+                                onClick={() => setActiveColorPicker(activeColorPicker === r.id ? null : r.id)}
+                                className="w-3.5 h-3.5 rounded-full border border-black/20 hover:scale-110 transition-transform shrink-0 shadow-sm"
+                                style={{ backgroundColor: r.permissions?.color || "#d1d5db" }}
+                                title="Choose role color"
+                              />
+                              {activeColorPicker === r.id && (
+                                <div className="absolute top-full left-0 mt-2 z-50 bg-white border border-amber-500/20 shadow-2xl rounded-xl p-3 flex flex-col gap-3 w-40 animate-in fade-in zoom-in duration-150 origin-top-left">
+                                  <div className="text-[10px] uppercase font-bold text-[#8a5d33] tracking-widest">Preset Colors</div>
+                                  <div className="grid grid-cols-4 gap-2">
+                                    {PRESET_COLORS.map(c => (
+                                      <button
+                                        key={c}
+                                        onClick={() => {
+                                          handleRoleColorChange(r.id, c);
+                                          setActiveColorPicker(null);
+                                        }}
+                                        className={`w-6 h-6 rounded-full border border-black/20 transition-transform ${r.permissions?.color === c ? 'ring-2 ring-offset-1 ring-black/50 scale-110' : 'hover:scale-110'}`}
+                                        style={{ backgroundColor: c }}
+                                        title={c}
+                                      />
+                                    ))}
+                                  </div>
+                                  <div className="border-t border-amber-500/10 pt-2 flex items-center justify-between gap-2">
+                                    <span className="text-[10px] text-gray-500 uppercase font-semibold">Custom</span>
+                                    <div className="relative rounded overflow-hidden shadow-sm border border-black/10 w-8 h-6">
+                                      <input
+                                        type="color"
+                                        value={r.permissions?.color || "#000000"}
+                                        onChange={(e) => handleRoleColorChange(r.id, e.target.value)}
+                                        className="absolute inset-0 w-[200%] h-[200%] -ml-[50%] -mt-[50%] cursor-pointer opacity-0"
+                                      />
+                                      <div className="w-full h-full pointer-events-none" style={{ backgroundColor: r.permissions?.color || "#000000" }} />
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            {r.isSystem ? (
+                              <span className="text-[#3d200a] font-bold">{r.name}</span>
+                            ) : (
+                              <input 
+                                type="text" 
+                                value={r.name} 
+                                onChange={(e) => handleUpdateRoleName(r.id, e.target.value)}
+                                className="bg-white border border-amber-500/30 rounded-lg px-2 py-1 text-[#3d200a] font-bold outline-none focus:ring-2 ring-[#8B0000]/40 w-full max-w-[150px]"
+                              />
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 px-4 text-center">
                           <PermissionCheckbox
@@ -856,7 +918,6 @@ export default function OnboardingFlow({ org }: { org: any }) {
                                 currentRoleId={inv.roleId} 
                                 roles={roles} 
                                 onChange={(newRoleId) => handleUpdateInviteRole(inv.email, newRoleId)} 
-                                getRoleColorOptions={getRoleColorOptions}
                               />
                               <button
                                 onClick={() => handleRemoveInvite(inv.email)}
@@ -910,8 +971,11 @@ export default function OnboardingFlow({ org }: { org: any }) {
                               <span className="text-[#3d200a] text-sm font-semibold">{inv.email}</span>
                             </td>
                             <td className="py-3 px-4 hidden sm:table-cell">
-                              <span className={`inline-block px-2.5 py-1 rounded-md text-[10px] uppercase tracking-wider font-bold border ${getRoleColorOptions(inv.roleId, true)}`}>
-                                {roles.find(r => r.id === inv.roleId)?.name || "Member"}
+                              <span 
+                                className="inline-block px-2.5 py-1 rounded-md text-[10px] uppercase tracking-wider font-bold border"
+                                style={getRoleStyle(inv.roleId, roles)}
+                              >
+                                {roles.find(r => r.id === inv.roleId)?.name || "Unknown Role"}
                               </span>
                             </td>
                             <td className="py-3 px-4 flex justify-end items-center gap-3">

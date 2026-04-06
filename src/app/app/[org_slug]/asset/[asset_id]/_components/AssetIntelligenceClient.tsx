@@ -113,7 +113,7 @@ function formatScanTimestamp(timestamp: string | null | undefined) {
   return `${date.toLocaleString()} (${formatDistanceToNow(date, { addSuffix: true })})`;
 }
 
-export default function AssetIntelligenceClient({ org, asset, initialScans, isAdmin, canScan }: any) {
+export default function AssetIntelligenceClient({ org, asset, initialScans, canManageAssets, canScan }: any) {
   const router = useRouter();
   const [scans, setScans] = useState(initialScans || []);
   const [isScanning, setIsScanning] = useState(false);
@@ -279,7 +279,7 @@ export default function AssetIntelligenceClient({ org, asset, initialScans, isAd
             </div>
           </div>
 
-          {(isAdmin || canScan) && (
+          {(canManageAssets || canScan) && (
             <div className="flex flex-wrap items-center gap-3 xl:justify-end">
               {activity?.lock.active && (
                 <div className="basis-full rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800 xl:max-w-[520px]">
@@ -291,7 +291,7 @@ export default function AssetIntelligenceClient({ org, asset, initialScans, isAd
                   {scanError}
                 </div>
               )}
-              {isAdmin && (
+              {canManageAssets && (
               <button
                 onClick={handleDiscover}
                 disabled={isDiscovering || isScanning}
@@ -311,7 +311,7 @@ export default function AssetIntelligenceClient({ org, asset, initialScans, isAd
                 {activity?.lock.active ? "Scan Locked" : isCreatingBatch ? "Starting Scan..." : assetScanActive ? "Scan Running" : "Re-Scan TLS"}
               </button>
               )}
-              {isAdmin && (
+              {canManageAssets && (
               <button
                 onClick={handleDelete}
                 disabled={isDeleting}

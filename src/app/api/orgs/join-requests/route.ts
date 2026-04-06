@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 
@@ -18,14 +19,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Organization ID required" }, { status: 400 });
     }
 
-    // Check caller is owner or admin
-    const callerRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-      `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-      orgId,
-      session.user.id
-    );
-    if (callerRows.length === 0 || (callerRows[0].role !== "owner" && callerRows[0].role !== "admin")) {
-      return NextResponse.json({ error: "Forbidden: Only owners and admins can view join requests." }, { status: 403 });
+    const access = await getOrgMemberAccess(orgId, session.user.id);
+    if (!access?.canManageTeam) {
+      return NextResponse.json({ error: "Forbidden: You do not have team management permission." }, { status: 403 });
     }
 
     const requests = await prisma.$queryRawUnsafe<any[]>(
@@ -147,13 +143,8 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: `Request already ${joinReq.status}` }, { status: 400 });
     }
 
-    // Verify caller is owner/admin of the org
-    const callerRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-      `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-      joinReq.organizationId,
-      session.user.id
-    );
-    if (callerRows.length === 0 || (callerRows[0].role !== "owner" && callerRows[0].role !== "admin")) {
+    const access = await getOrgMemberAccess(joinReq.organizationId, session.user.id);
+    if (!access?.canManageTeam) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

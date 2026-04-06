@@ -12,7 +12,7 @@ import {
 } from "react";
 import { AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
-import type { OrgScanActivityPayload, ScanBatchType } from "@/lib/scan-activity-types";
+import type { OrgScanActivityPayload, ScanBatchType, ScanEngine } from "@/lib/scan-activity-types";
 
 const STREAM_RECONNECT_BASE_MS = 1000;
 const STREAM_RECONNECT_MAX_MS = 15000;
@@ -25,6 +25,8 @@ interface CreateBatchInput {
   orgId: string;
   type: ScanBatchType;
   assetIds: string[];
+  engine?: ScanEngine;
+  configSnapshot?: unknown;
 }
 
 interface CancelBatchInput {
@@ -52,6 +54,7 @@ interface OrgActivityState {
   streamIntent: StreamIntent;
   streamStatus: StreamStatus;
   pendingBatchType: ScanBatchType | null;
+  pendingBatchEngine: ScanEngine | null;
   cancellingBatchId: string | null;
 }
 
@@ -104,7 +107,14 @@ function writeStoredLastSync(orgId: string, syncedAt: string) {
   }
 }
 
-function batchTypeLabel(type: ScanBatchType | null | undefined) {
+function batchActionLabel(type: ScanBatchType | null | undefined, engine: ScanEngine | null | undefined) {
+  if (engine === "portDiscovery") {
+    if (type === "full") return "full port discovery";
+    if (type === "group") return "group port discovery";
+    if (type === "single") return "single port discovery";
+    return "port discovery";
+  }
+
   if (type === "full") return "full scan";
   if (type === "group") return "group scan";
   if (type === "single") return "scan";
@@ -122,6 +132,7 @@ const defaultOrgState: OrgActivityState = {
   streamIntent: "off",
   streamStatus: "idle",
   pendingBatchType: null,
+  pendingBatchEngine: null,
   cancellingBatchId: null,
 };
 
@@ -180,6 +191,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
           ? "error"
           : previous.streamStatus,
       pendingBatchType: previous.pendingBatchType,
+      pendingBatchEngine: previous.pendingBatchEngine,
       cancellingBatchId: previous.cancellingBatchId,
     });
   }, [setOrgState]);
@@ -228,6 +240,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
           streamIntent: previous.streamIntent,
           streamStatus: previous.streamStatus,
           pendingBatchType: previous.pendingBatchType,
+          pendingBatchEngine: previous.pendingBatchEngine,
           cancellingBatchId: previous.cancellingBatchId,
         });
         return data;
@@ -265,6 +278,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       streamIntent: options.streamIntent ?? previous.streamIntent,
       streamStatus: options.streamStatus ?? previous.streamStatus,
       pendingBatchType: previous.pendingBatchType,
+      pendingBatchEngine: previous.pendingBatchEngine,
       cancellingBatchId: previous.cancellingBatchId,
       lastSyncAt: previous.lastSyncAt,
     });
@@ -306,6 +320,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       streamIntent: options?.clearIntent === false ? previous.streamIntent : "off",
       streamStatus: options?.error ? "error" : "idle",
       pendingBatchType: previous.pendingBatchType,
+      pendingBatchEngine: previous.pendingBatchEngine,
       cancellingBatchId: previous.cancellingBatchId,
       lastSyncAt: previous.lastSyncAt,
     });
@@ -513,7 +528,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
           remainingSeconds?: number;
           shutdownAt?: number;
         };
-        const message = payload.message || "OpenSSL scanning endpoint appears unavailable.";
+        const message = payload.message || "Scanning endpoint appears unavailable.";
         const remainingSeconds = typeof payload.remainingSeconds === "number"
           ? Math.max(0, Math.ceil(payload.remainingSeconds))
           : null;
@@ -524,6 +539,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
         toast.error(countdownMessage, {
           id: `scan-service-unavailable-${orgId}`,
           duration: 8000,
+          position: "bottom-right",
           icon: <AlertTriangle className="h-4 w-4 text-white" />,
           style: {
             background: "#dc2626",
@@ -548,7 +564,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
           message?: string;
           activity?: OrgScanActivityPayload;
         };
-        const shutdownMessage = payload.message || "OpenSSL endpoint stayed unavailable. Active scans were stopped.";
+        const shutdownMessage = payload.message || "Scanning endpoint stayed unavailable. Active scans were stopped.";
 
         if (payload.activity) {
           applyActivityState(orgId, payload.activity, { connected: false, error: null });
@@ -765,6 +781,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       ...previous,
       error: null,
       pendingBatchType: input.type,
+      pendingBatchEngine: input.engine || "openssl",
     });
 
     const createToastId = `scan-create-${input.orgId}`;
@@ -785,7 +802,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: activity.lock.message || "A scan is already running." };
       }
 
-      toast.loading(`Starting ${batchTypeLabel(input.type)}...`, { id: createToastId });
+      toast.loading(`Starting ${batchActionLabel(input.type, input.engine || "openssl")}...`, { id: createToastId });
 
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), SCAN_REQUEST_TIMEOUT_MS);
@@ -823,18 +840,30 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       }
 
       await ensureOrgStream(input.orgId, "batch-driven", data?.activity ?? null);
-      toast.success(`${batchTypeLabel(input.type).replace(/^./, (c) => c.toUpperCase())} started.`, {
-        id: createToastId,
-        action: {
-          label: "View",
-          onClick: () => setMonitorOrgId(input.orgId),
-        },
-      });
+      const startedLabel = `${batchActionLabel(input.type, input.engine || "openssl").replace(/^./, (c) => c.toUpperCase())} started.`;
+      if ((input.engine || "openssl") === "portDiscovery") {
+        toast.info(startedLabel, {
+          id: createToastId,
+          position: "bottom-right",
+          action: {
+            label: "View",
+            onClick: () => setMonitorOrgId(input.orgId),
+          },
+        });
+      } else {
+        toast.success(startedLabel, {
+          id: createToastId,
+          action: {
+            label: "View",
+            onClick: () => setMonitorOrgId(input.orgId),
+          },
+        });
+      }
 
       return { ok: true };
     } catch (error: any) {
       const message = error?.name === "AbortError"
-        ? "Scan request timed out. OpenSSL service may be unavailable."
+        ? "Scan request timed out. The scanning service may be unavailable."
         : (error?.message || "Failed to create scan batch.");
       toast.error(message, { id: createToastId });
       return { ok: false, error: message };
@@ -843,6 +872,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
         setOrgState(input.orgId, {
           ...latest,
           pendingBatchType: null,
+          pendingBatchEngine: null,
         });
         createBatchPromisesRef.current.delete(input.orgId);
       }
@@ -858,6 +888,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       ...previous,
       error: null,
       serviceUnavailableRemainingSeconds: null,
+      pendingBatchEngine: previous.pendingBatchEngine,
       cancellingBatchId: input.batchId,
     });
 
@@ -890,6 +921,7 @@ export function ScanActivityProvider({ children }: { children: ReactNode }) {
       const latest = orgStatesRef.current[input.orgId] || defaultOrgState;
       setOrgState(input.orgId, {
         ...latest,
+        pendingBatchEngine: latest.pendingBatchEngine,
         cancellingBatchId: null,
       });
     }
@@ -995,6 +1027,7 @@ export function useScanActivity(
     error: state.error,
     streamStatus: state.streamStatus,
     pendingBatchType: state.pendingBatchType,
+    pendingBatchEngine: state.pendingBatchEngine,
     cancellingBatchId: state.cancellingBatchId,
   };
 }

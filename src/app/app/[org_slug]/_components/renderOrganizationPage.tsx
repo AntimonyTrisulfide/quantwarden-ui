@@ -1,5 +1,6 @@
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import OnboardingFlow from "./OnboardingFlow";
@@ -71,13 +72,18 @@ export async function renderOrganizationPage(orgSlug: string, activeSection: Das
   }
 
   const memberRole = memberRows[0].role;
+  const access = await getOrgMemberAccess(orgBasic.id, session.user.id);
+
+  if (!access) {
+    redirect("/app");
+  }
 
   const org: any = { ...orgBasic, domains: [] as string[], assets: [] as any[], roles: [] as any[] };
 
   let assetsRows: any[] = [];
   try {
-    assetsRows = await prisma.$queryRawUnsafe<{ id: string, value: string, type: string, isRoot: boolean, parentId: string | null, verified: boolean, createdAt: Date, scanStatus: string, lastScanDate: Date | null }[]>(
-      `SELECT id, value, type, "isRoot", "parentId", verified, "createdAt", "scanStatus", "lastScanDate" FROM "asset" WHERE "organizationId" = $1`,
+    assetsRows = await prisma.$queryRawUnsafe<{ id: string, value: string, type: string, isRoot: boolean, parentId: string | null, verified: boolean, resolvedIp: string | null, openPorts: string | null, createdAt: Date, scanStatus: string, lastScanDate: Date | null, portDiscoveryStatus: string, lastPortDiscoveryDate: Date | null }[]>(
+      `SELECT id, value, type, "isRoot", "parentId", verified, "resolvedIp", "openPorts", "createdAt", "scanStatus", "lastScanDate", "portDiscoveryStatus", "lastPortDiscoveryDate" FROM "asset" WHERE "organizationId" = $1`,
       org.id
     );
   } catch (err) {
@@ -103,10 +109,10 @@ export async function renderOrganizationPage(orgSlug: string, activeSection: Das
     return { id: r.id, name: r.name, permissions: perms };
   });
 
-  const canScan =
-    memberRole === "owner" ||
-    memberRole === "admin" ||
-    org.roles.some((role: any) => (role.id === memberRole || role.name?.toLowerCase?.() === memberRole.toLowerCase()) && role.permissions?.scan);
+  const canManageTeam = access.canManageTeam;
+  const canManageRoles = access.canManageRoles;
+  const canManageAssets = access.canManageAssets;
+  const canScan = access.canScan;
 
   let setupComplete = false;
   if (org.metadata) {
@@ -120,12 +126,19 @@ export async function renderOrganizationPage(orgSlug: string, activeSection: Das
     return <OnboardingFlow org={org} />;
   }
 
+  if (activeSection === "roles" && !canManageRoles) {
+    redirect(`/app/${orgSlug}/team`);
+  }
+
   return (
     <OrgDashboard
       org={org}
       currentUserRole={memberRole}
       currentUserId={session.user.id}
       activeSection={activeSection}
+      canManageTeam={canManageTeam}
+      canManageRoles={canManageRoles}
+      canManageAssets={canManageAssets}
       canScan={canScan}
     />
   );

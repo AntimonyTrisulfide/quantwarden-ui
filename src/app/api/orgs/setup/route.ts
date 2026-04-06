@@ -65,13 +65,15 @@ export async function POST(req: NextRequest) {
         try {
           const assetId = crypto.randomUUID();
           await prisma.$executeRawUnsafe(
-            `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "openPorts", "createdAt")
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
             assetId,
             d,
             "domain",
             true,
             organizationId,
             false,
+            JSON.stringify([{ number: 443, protocol: "tcp" }]),
             new Date()
           );
         } catch (e) {

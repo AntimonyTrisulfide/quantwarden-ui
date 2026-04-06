@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect, useRef, useCallback } from "react";
 import ReactDOM from "react-dom";
+import { getRoleStyle } from "@/lib/utils";
 import {
   Users,
   Mail,
@@ -32,7 +34,8 @@ interface TeamManagementProps {
   org: any;
   currentUserRole: string;
   currentUserId: string;
-  isAdmin: boolean;
+  canManageTeam: boolean;
+  canManageRoles: boolean;
 }
 
 // ═══════════════════════════════════════
@@ -41,13 +44,11 @@ interface TeamManagementProps {
 function RoleDropdown({
   currentRole,
   roles,
-  systemRoles,
   onChange,
   small,
 }: {
   currentRole: string;
   roles: any[];
-  systemRoles: string[];
   onChange: (role: string) => void;
   small?: boolean;
 }) {
@@ -93,10 +94,7 @@ function RoleDropdown({
     };
   }, [isOpen]);
 
-  const allRoles = [
-    ...systemRoles.map((r) => ({ id: r, name: r.charAt(0).toUpperCase() + r.slice(1) })),
-    ...roles.map((r) => ({ id: r.id, name: r.name })),
-  ];
+  const allRoles = roles.map((r) => ({ id: r.id, name: r.name }));
 
   const currentLabel = allRoles.find((r) => r.id === currentRole)?.name || currentRole;
 
@@ -106,9 +104,10 @@ function RoleDropdown({
         ref={triggerRef}
         type="button"
         onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen); }}
-        className={`flex items-center justify-between gap-2 font-bold rounded-xl border outline-none cursor-pointer transition-colors ${getRoleColor(currentRole)} ${
+        className={`flex items-center justify-between gap-2 font-bold rounded-xl border outline-none cursor-pointer transition-colors ${
           small ? "text-[10px] px-2.5 py-2 w-[110px]" : "text-xs px-3 py-2 w-[140px]"
         }`}
+        style={getRoleStyle(currentRole, roles)}
       >
         <span className="truncate">{currentLabel}</span>
         <ChevronDown className="w-3 h-3 shrink-0" />
@@ -117,44 +116,40 @@ function RoleDropdown({
       {isOpen && dropdownPos && ReactDOM.createPortal(
         <div
           ref={dropdownRef}
-          className="fixed w-48 bg-white border border-amber-500/20 rounded-xl shadow-xl p-2.5 animate-in fade-in zoom-in-95 duration-100"
+          className="fixed w-48 bg-white border border-amber-500/20 rounded-xl shadow-xl overflow-hidden flex flex-col py-1.5 animate-in fade-in zoom-in-95 duration-100"
           style={{ top: dropdownPos.top, left: Math.max(8, dropdownPos.left), zIndex: 9999 }}
         >
-          <div className="px-1 pb-1.5 mb-1.5 text-[10px] font-bold text-[#8a5d33]/50 uppercase tracking-wider border-b border-amber-500/10">
+          <div className="px-3 pb-1.5 pt-1 mb-1 text-[10px] font-bold text-[#8a5d33]/50 uppercase tracking-wider border-b border-amber-500/10">
             Select Role
           </div>
-          <div className="flex flex-col gap-1.5 max-h-[200px] overflow-y-auto">
+          <div className="flex flex-col max-h-[200px] overflow-y-auto">
             {allRoles
               .filter((r) => r.id !== "owner")
-              .map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  onClick={() => { onChange(r.id); setIsOpen(false); }}
-                  className={`flex items-center justify-between text-xs font-bold px-3 py-2.5 rounded-lg transition-colors border ${getRoleColor(r.id, true)} ${
-                    r.id === currentRole ? "ring-2 ring-inset ring-[#8B0000]/30" : ""
-                  }`}
-                >
-                  {r.name}
-                  {r.id === currentRole && <Check className="w-3.5 h-3.5 opacity-70" />}
-                </button>
-              ))}
+              .map((r) => {
+                const style = getRoleStyle(r.id, roles);
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => { onChange(r.id); setIsOpen(false); }}
+                    className={`flex items-center justify-between text-xs font-bold px-3 py-3 transition-colors border-b border-amber-500/10 last:border-b-0 ${
+                      r.id === currentRole ? "bg-amber-500/10" : "hover:bg-amber-500/5"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span className="w-2 h-2 rounded-full ring-1 ring-black/10 shrink-0" style={{ backgroundColor: style.color }} />
+                      <span style={{ color: style.color }}>{r.name}</span>
+                    </div>
+                    {r.id === currentRole && <Check className="w-3.5 h-3.5" style={{ color: style.color }} />}
+                  </button>
+                );
+              })}
           </div>
         </div>,
         document.body
       )}
     </div>
   );
-}
-
-function getRoleColor(role: string, isOption: boolean = false): string {
-  const r = role.toLowerCase();
-  if (r === "owner") return "bg-[#8B0000]/10 text-[#8B0000] border-[#8B0000]/30";
-  if (r === "admin" || r.includes("admin")) return "bg-red-50 text-red-700 border-red-200 hover:bg-red-100";
-  if (r === "member") return "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100";
-  if (r.includes("auditor")) return "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100";
-  if (r.includes("analyst")) return "bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100";
-  return "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100";
 }
 
 // ═══════════════════════════════════════
@@ -240,7 +235,7 @@ function SectionCard({ title, icon: Icon, badge, onExpand, children, className }
 // ═══════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════
-export default function TeamManagement({ org, currentUserRole, currentUserId, isAdmin }: TeamManagementProps) {
+export default function TeamManagement({ org, currentUserRole, currentUserId, canManageTeam, canManageRoles }: TeamManagementProps) {
   const [members, setMembers] = useState<any[]>([]);
   const [invites, setInvites] = useState<any[]>([]);
   const [joinRequests, setJoinRequests] = useState<any[]>([]);
@@ -252,7 +247,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
   // Invite input
   const [newInvites, setNewInvites] = useState<{ email: string; roleId: string }[]>([]);
   const [currentEmail, setCurrentEmail] = useState("");
-  const [currentInviteRole, setCurrentInviteRole] = useState(() => org.roles.find((r: any) => r.name.toLowerCase() === "analyst")?.id || "member");
+  const [currentInviteRole, setCurrentInviteRole] = useState(() => org.roles.find((r: any) => r.name.toLowerCase() === "analyst")?.id || org.roles[0]?.id || "");
   const [sendingInvites, setSendingInvites] = useState(false);
 
   // Member actions
@@ -264,13 +259,12 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
 
   // Accept request role
   const [acceptRoleFor, setAcceptRoleFor] = useState<string | null>(null);
-  const [acceptRole, setAcceptRole] = useState("member");
+  const [acceptRole, setAcceptRole] = useState(() => org.roles.find((r: any) => r.name.toLowerCase() === "analyst")?.id || org.roles[0]?.id || "");
 
   // Modals
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
 
   const menuRef = useRef<HTMLDivElement>(null);
-  const systemRoles = ["admin", "member"];
 
   // === Data Fetching ===
   const fetchAll = useCallback(async () => {
@@ -279,14 +273,14 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
       const [membersRes, invitesRes, requestsRes] = await Promise.all([
         fetch(`/api/orgs/members?orgId=${org.id}`),
         fetch(`/api/orgs/invite?orgId=${org.id}`),
-        isAdmin ? fetch(`/api/orgs/join-requests?orgId=${org.id}`) : Promise.resolve(null),
+        canManageTeam ? fetch(`/api/orgs/join-requests?orgId=${org.id}`) : Promise.resolve(null),
       ]);
       if (membersRes.ok) setMembers(await membersRes.json());
       if (invitesRes.ok) setInvites(await invitesRes.json());
       if (requestsRes && requestsRes.ok) setJoinRequests(await requestsRes.json());
     } catch { console.error("Failed to fetch team data"); }
     finally { setLoading(false); }
-  }, [org.id, isAdmin]);
+  }, [org.id, canManageTeam]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -413,12 +407,15 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
         <div className="flex items-center gap-2 shrink-0">
           {changingRoleFor === member.id ? (
             <div className="flex items-center gap-2 animate-in fade-in zoom-in-95 duration-150">
-              <RoleDropdown currentRole={member.roleId} roles={org.roles} systemRoles={systemRoles} onChange={(newRole) => handleChangeRole(member.id, newRole)} small />
+              <RoleDropdown currentRole={member.roleId} roles={org.roles} onChange={(newRole) => handleChangeRole(member.id, newRole)} small />
               <button onClick={() => setChangingRoleFor(null)} className="text-[10px] text-[#8a5d33] font-bold hover:text-[#3d200a] px-1.5 py-1 rounded-lg hover:bg-amber-500/10 transition-colors">Cancel</button>
             </div>
           ) : (
             <>
-              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] uppercase tracking-wider font-bold border ${getRoleColor(member.role)}`}>
+              <span 
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] uppercase tracking-wider font-bold border"
+                style={getRoleStyle(member.roleId, org.roles)}
+              >
                 {isOwner && <Crown className="w-2.5 h-2.5" />}
                 {member.roleId === "admin" && <Shield className="w-2.5 h-2.5" />}
                 {member.role.charAt(0).toUpperCase() + member.role.slice(1)}
@@ -428,7 +425,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
           )}
 
           {/* 3-dot menu */}
-          {isAdmin && !isOwner && changingRoleFor !== member.id && (
+          {canManageTeam && !isOwner && changingRoleFor !== member.id && (
             <div className="relative" ref={menuRef}>
               <button
                 onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === member.id ? null : member.id); }}
@@ -461,7 +458,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
               )}
             </div>
           )}
-          {!isAdmin && isSelf && !isOwner && (
+          {!canManageTeam && isSelf && !isOwner && (
             <div className="relative">
               <button onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === member.id ? null : member.id); }} className="w-7 h-7 rounded-lg flex items-center justify-center text-[#8a5d33] opacity-0 group-hover:opacity-100 hover:bg-[#8B0000]/10 hover:text-[#8B0000] transition-all cursor-pointer">
                 <MoreHorizontal className="w-4 h-4" />
@@ -509,7 +506,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
           </div>
         </div>
         <div className="flex items-center gap-1.5">
-          <RoleDropdown currentRole={currentInviteRole} roles={org.roles} systemRoles={systemRoles} onChange={setCurrentInviteRole} small />
+          <RoleDropdown currentRole={currentInviteRole} roles={org.roles} onChange={setCurrentInviteRole} small />
           <input
             type="text"
             value={currentEmail}
@@ -536,7 +533,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
                 <span className="text-xs font-semibold text-[#3d200a] truncate">{inv.email}</span>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <RoleDropdown currentRole={inv.roleId} roles={org.roles} systemRoles={systemRoles} onChange={(newRole) => setNewInvites(newInvites.map((i) => (i.email === inv.email ? { ...i, roleId: newRole } : i)))} small />
+                <RoleDropdown currentRole={inv.roleId} roles={org.roles} onChange={(newRole) => setNewInvites(newInvites.map((i) => (i.email === inv.email ? { ...i, roleId: newRole } : i)))} small />
                 <button type="button" onClick={() => setNewInvites(newInvites.filter((i) => i.email !== inv.email))} className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition-colors">
                   <X className="w-3 h-3" />
                 </button>
@@ -563,9 +560,20 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
   return (
     <div className="flex flex-col flex-1 min-h-0 gap-4 lg:gap-3">
       {/* Page Header */}
-      <div className="shrink-0">
-        <h1 className="text-2xl font-black text-[#3d200a] tracking-tight">Team Management</h1>
-        <p className="text-[#8a5d33] font-medium mt-1">Manage members, invitations, and join requests for {org.name}.</p>
+      <div className="shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-black text-[#3d200a] tracking-tight">Team Management</h1>
+          <p className="text-[#8a5d33] font-medium mt-1">Manage members, invitations, and join requests for {org.name}.</p>
+        </div>
+        {canManageRoles && (
+          <Link
+            href={`/app/${org.slug}/roles`}
+            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-[#8B0000] text-white text-sm font-bold rounded-xl shadow-lg shadow-[#8B0000]/20 hover:bg-[#730000] hover:-translate-y-0.5 transition-all shrink-0"
+          >
+            <Shield className="w-4 h-4" />
+            Manage Roles
+          </Link>
+        )}
       </div>
 
       {error && (
@@ -581,7 +589,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
       <div className="grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-[1fr_1fr] gap-4 lg:gap-3 flex-1 min-h-0 pb-2">
 
         {/* ────── TOP LEFT: Invite Members ────── */}
-        {isAdmin && (
+        {canManageTeam && (
           <SectionCard
             title="Invite Members"
             icon={UserPlus}
@@ -597,7 +605,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
           icon={Users}
           badge={<span className="text-[10px] font-bold text-[#8a5d33] bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/15">{members.length} total</span>}
           onExpand={() => setExpandedSection("members")}
-          className={!isAdmin ? "lg:col-span-2" : ""}
+          className={!canManageTeam ? "lg:col-span-2" : ""}
         >
           <div className="divide-y divide-amber-500/10">
             {previewMembers.map((m) => renderMemberRow(m, true))}
@@ -613,7 +621,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
         </SectionCard>
 
         {/* ────── BOTTOM LEFT: Joining Requests ────── */}
-        {isAdmin && (
+        {canManageTeam && (
           <SectionCard
             title="Joining Requests"
             icon={UserCheck}
@@ -640,7 +648,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      <button onClick={() => { setAcceptRoleFor(req.id); setAcceptRole("member"); setExpandedSection("requests"); }} className="px-2 py-1 bg-emerald-600 text-white rounded-md text-[10px] font-bold hover:bg-emerald-700"><Check className="w-3 h-3" /></button>
+                      <button onClick={() => { setAcceptRoleFor(req.id); setAcceptRole(org.roles.find((r: any) => r.name.toLowerCase() === "analyst")?.id || org.roles[0]?.id || ""); setExpandedSection("requests"); }} className="px-2 py-1 bg-emerald-600 text-white rounded-md text-[10px] font-bold hover:bg-emerald-700"><Check className="w-3 h-3" /></button>
                       <button onClick={() => handleDenyRequest(req.id)} className="px-2 py-1 bg-red-50 text-red-600 border border-red-200 rounded-md text-[10px] font-bold hover:bg-red-100"><X className="w-3 h-3" /></button>
                     </div>
                   </div>
@@ -656,7 +664,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
         )}
 
         {/* ────── BOTTOM RIGHT: Active Invitations ────── */}
-        {isAdmin && (
+        {canManageTeam && (
           <SectionCard
             title="Active Invitations"
             icon={Mail}
@@ -683,8 +691,11 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className={`px-2 py-0.5 rounded text-[9px] uppercase font-bold border ${getRoleColor(inv.roleId, true)}`}>
-                        {org.roles.find((r: any) => r.id === inv.roleId)?.name || "Member"}
+                      <span 
+                        className="px-2 py-0.5 rounded text-[9px] uppercase font-bold border"
+                        style={getRoleStyle(inv.roleId, org.roles)}
+                      >
+                        {org.roles.find((r: any) => r.id === inv.roleId)?.name || "Unknown Role"}
                       </span>
                       <button onClick={() => handleRevokeInvite(inv.id)} className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition-colors">
                         <Trash2 className="w-3 h-3" />
@@ -764,7 +775,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
                   <div className="flex items-center gap-2 shrink-0 ml-4">
                     {acceptRoleFor === req.id ? (
                       <div className="flex items-center gap-2 animate-in fade-in zoom-in-95 duration-150">
-                        <RoleDropdown currentRole={acceptRole} roles={org.roles} systemRoles={systemRoles} onChange={(r) => setAcceptRole(r)} small />
+                        <RoleDropdown currentRole={acceptRole} roles={org.roles} onChange={(r) => setAcceptRole(r)} small />
                         <button onClick={() => handleAcceptRequest(req.id, acceptRole)} disabled={actionLoading} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-all disabled:opacity-50">
                           {actionLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />} Confirm
                         </button>
@@ -773,7 +784,7 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
                     ) : (
                       <>
                         <span className="text-xs text-[#8a5d33]/60">{new Date(req.createdAt).toLocaleDateString()}</span>
-                        <button onClick={() => { setAcceptRoleFor(req.id); setAcceptRole("member"); }} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-all">
+                        <button onClick={() => { setAcceptRoleFor(req.id); setAcceptRole(org.roles.find((r: any) => r.name.toLowerCase() === "analyst")?.id || org.roles[0]?.id || ""); }} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-all">
                           <UserCheck className="w-3.5 h-3.5" /> Accept
                         </button>
                         <button onClick={() => handleDenyRequest(req.id)} disabled={actionLoading} className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 border border-red-200 rounded-lg text-xs font-bold hover:bg-red-100 transition-all disabled:opacity-50">
@@ -817,8 +828,11 @@ export default function TeamManagement({ org, currentUserRole, currentUserId, is
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
-                  <span className={`px-2.5 py-1 rounded-lg text-[10px] uppercase tracking-wider font-bold border ${getRoleColor(inv.roleId, true)}`}>
-                    {org.roles.find((r: any) => r.id === inv.roleId)?.name || "Member"}
+                  <span 
+                    className="px-2.5 py-1 rounded-lg text-[10px] uppercase tracking-wider font-bold border"
+                    style={getRoleStyle(inv.roleId, org.roles)}
+                  >
+                    {org.roles.find((r: any) => r.id === inv.roleId)?.name || "Unknown Role"}
                   </span>
                   <span className="inline-flex items-center gap-1 text-amber-600 bg-amber-50 px-2 py-1 rounded-md text-xs font-bold border border-amber-200">
                     <Clock className="w-3 h-3" /> Pending

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
+import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 import AssetIntelligenceClient from "./_components/AssetIntelligenceClient";
@@ -17,34 +18,8 @@ export default async function AssetIntelligencePage({ params }: { params: Promis
   if (orgRows.length === 0) redirect("/app");
   const org = orgRows[0];
 
-  const memberRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-    `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-    org.id,
-    session.user.id
-  );
-  if (memberRows.length === 0) redirect("/app");
-  const isAdmin = memberRows[0].role === "owner" || memberRows[0].role === "admin";
-  const canScan =
-    isAdmin ||
-    (
-      await prisma.$queryRawUnsafe<{ permissions: string | null }[]>(
-        `SELECT r.permissions
-         FROM "member" m
-         LEFT JOIN "role" r
-           ON r."organizationId" = m."organizationId"
-          AND (r.id::text = m.role OR LOWER(r.name) = LOWER(m.role))
-         WHERE m."organizationId" = $1 AND m."userId" = $2
-         LIMIT 1`,
-        org.id,
-        session.user.id
-      )
-    ).some((row) => {
-      try {
-        return Boolean(row.permissions && JSON.parse(row.permissions)?.scan);
-      } catch {
-        return false;
-      }
-    });
+  const access = await getOrgMemberAccess(org.id, session.user.id);
+  if (!access) redirect("/app");
 
   // Check if it's a UUID/CUID structure (broad match for alphanumeric IDs vs domains)
   // CUIDs and UUIDs lack dots, domains have dots.
@@ -83,8 +58,8 @@ export default async function AssetIntelligencePage({ params }: { params: Promis
                org={org} 
                asset={asset} 
                initialScans={scanRows}
-               isAdmin={isAdmin}
-               canScan={canScan}
+               canScan={access.canScan}
+               canManageAssets={access.canManageAssets}
             />
          </div>
     </div>

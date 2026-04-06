@@ -19,12 +19,22 @@ import {
   X,
 } from "lucide-react";
 import { useScanActivity } from "@/components/scan-activity-provider";
-import type { ScanActivityBatch, ScanActivityItem, ScanHistoryCategory, ScanHistoryEntry } from "@/lib/scan-activity-types";
+import type { ScanActivityBatch, ScanActivityItem, ScanEngine, ScanHistoryCategory, ScanHistoryEntry } from "@/lib/scan-activity-types";
 
-function batchLabel(type: ScanActivityBatch["type"]) {
-  if (type === "full") return "Full Scan";
-  if (type === "group") return "Group Scan";
-  return "Single Scan";
+function batchLabel(type: ScanActivityBatch["type"], engine: ScanEngine) {
+  if (engine === "portDiscovery") {
+    if (type === "full") return "Full Port Discovery";
+    if (type === "group") return "Group Port Discovery";
+    return "Single Port Discovery";
+  }
+
+  if (type === "full") return "Full OpenSSL Scan";
+  if (type === "group") return "Group OpenSSL Scan";
+  return "OpenSSL Scan";
+}
+
+function engineServiceLabel(engine: ScanEngine | null | undefined) {
+  return engine === "portDiscovery" ? "Nmap API" : "OpenSSL scanning endpoint";
 }
 
 function formatWhen(value: string | null) {
@@ -240,7 +250,7 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
           <p className="text-xs font-semibold text-[#8a5d33]/60">
             {batch.status === "running" || batch.status === "queued" ? "Current Batch" : "Latest Batch"}
           </p>
-          <h3 className="mt-2 text-2xl font-black tracking-tight text-[#3d200a]">{batchLabel(batch.type)}</h3>
+          <h3 className="mt-2 text-2xl font-black tracking-tight text-[#3d200a]">{batchLabel(batch.type, batch.engine)}</h3>
           <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-[#8a5d33]/70">
             <span>Initiated by {batch.initiatedBy?.name || batch.initiatedBy?.email || "Unknown"}</span>
             <span className="text-[#8a5d33]/35">•</span>
@@ -562,9 +572,7 @@ export default function ScanActivityMonitor({
   const featuredBatch = activeBatch;
   const hasRunningSharedScan = Boolean(
     activity?.activeBatches.some(
-      (batch) =>
-        (batch.type === "full" || batch.type === "group") &&
-        (batch.status === "running" || batch.status === "queued")
+      (batch) => batch.status === "running" || batch.status === "queued"
     )
   );
   const miniStreamStatus: "idle" | "connecting" | "connected" | "error" = hasRunningSharedScan
@@ -580,6 +588,7 @@ export default function ScanActivityMonitor({
   const canStop = canScan && Boolean(activeBatch);
   const streamChip = streamChipTone(streamStatus);
   const miniStreamChip = streamChipTone(miniStreamStatus);
+  const showMiniProgress = miniStreamStatus === "connected" && Boolean(featuredBatch);
   const cardStateLabel = activity?.lock.active
     ? "In progress"
     : featuredBatch?.status === "queued"
@@ -600,12 +609,8 @@ export default function ScanActivityMonitor({
           : latestBatch?.status === "running"
             ? "Running"
             : "Idle";
-  const hasActiveSharedScan = Boolean(
-    activity?.activeBatches.some((batch) => batch.type === "full" || batch.type === "group")
-  );
-  const liveScanBatch = (activity?.activeBatches || []).find(
-    (batch) => batch.type === "full" || batch.type === "group"
-  ) || activeBatch;
+  const hasActiveSharedScan = Boolean(activity?.activeBatches.length);
+  const liveScanBatch = activeBatch;
   const shouldShowHistoryPanel = hasActiveSharedScan ? showHistoryPanel : true;
   const shouldShowLiveScanPanel = hasActiveSharedScan && !showHistoryPanel;
   const historyEntries = activity?.recentHistory || [];
@@ -613,9 +618,14 @@ export default function ScanActivityMonitor({
   const headerActionsHideExit = 26;
   const headerCompactEnter = 104;
   const headerCompactExit = 52;
+  const serviceWarningEngine = activity?.lock.engine || activeBatch?.engine || latestBatch?.engine || null;
   const outageSignalActive = Boolean(
-    error && /openssl scanning endpoint appears unavailable|service unavailable|may stall/i.test(error)
+    error && /endpoint appears unavailable|service unavailable|may stall|nmap api/i.test(error)
   );
+  const serviceWarningTitle = `${engineServiceLabel(serviceWarningEngine)} warning`;
+  const serviceWarningMessage =
+    error ||
+    `${engineServiceLabel(serviceWarningEngine)} appears unavailable. Live scans may stall until the service recovers.`;
   const streamOutageLikely =
     streamStatus === "error" &&
     (Boolean(activity?.lock.active) || hasActiveSharedScan || Boolean(activeBatch));
@@ -812,24 +822,26 @@ export default function ScanActivityMonitor({
                 />
               </div>
               <p className="mt-1 truncate text-xs font-semibold text-red-100/80">
-                {featuredBatch ? batchLabel(featuredBatch.type) : "No active shared scans"}
+                {featuredBatch ? batchLabel(featuredBatch.type, featuredBatch.engine) : "No active shared scans"}
               </p>
             </div>
           </div>
-          <div className="mt-3 flex items-center gap-2.5">
-            <div className="scan-progress-track h-2 flex-1 overflow-hidden rounded-full bg-white/10">
-              <div
-                className="scan-progress-fill h-full rounded-full bg-linear-to-r from-amber-300 via-amber-100 to-white transition-all"
-                style={{ width: `${featuredBatch?.percentComplete ?? 0}%` }}
-              />
+          {showMiniProgress && (
+            <div className="mt-3 flex items-center gap-2.5">
+              <div className="scan-progress-track h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="scan-progress-fill h-full rounded-full bg-linear-to-r from-amber-300 via-amber-100 to-white transition-all"
+                  style={{ width: `${featuredBatch?.percentComplete ?? 0}%` }}
+                />
+              </div>
+              <span className="shrink-0 text-sm font-black text-white">
+                {featuredBatch?.percentComplete ?? 0}%
+              </span>
             </div>
-            <span className="shrink-0 text-sm font-black text-white">
-              {featuredBatch?.percentComplete ?? 0}%
-            </span>
-          </div>
+          )}
         </div>
         <div className="mt-3 flex items-center justify-between gap-3 text-xs">
-          {featuredBatch ? (
+          {showMiniProgress ? (
             <div className="min-w-0 flex items-center gap-2 text-white/88">
               <span className="truncate font-bold">
                 {`${featuredBatch.completedAssets + featuredBatch.failedAssets}/${featuredBatch.totalAssets}`}
@@ -843,8 +855,8 @@ export default function ScanActivityMonitor({
               <div className="inline-flex items-center gap-1.5 rounded-full border border-red-300/85 bg-red-600/95 px-2 py-1 text-white">
                 <span
                   className="scan-mini-warning-badge inline-flex h-4.5 w-4.5 items-center justify-center rounded-full bg-red-700 text-white"
-                  aria-label="OpenSSL scanning service warning"
-                  title="OpenSSL scanning endpoint is unavailable"
+                  aria-label={serviceWarningTitle}
+                  title={serviceWarningTitle}
                 >
                   <AlertTriangle className="scan-mini-warning-icon h-3 w-3" />
                 </span>
@@ -918,7 +930,7 @@ export default function ScanActivityMonitor({
                     </button>
                     {showInfoTooltip && (
                       <div className="absolute left-0 top-10 z-20 w-72 rounded-xl border border-white/30 bg-[#5d0000]/94 p-3 text-xs font-medium leading-relaxed text-red-50 shadow-xl backdrop-blur-sm">
-                        <p>Track live OpenSSL scan progress, recent runs, and failure diagnostics for this organization.</p>
+                        <p>Track live scan progress, recent runs, and failure diagnostics for this organization.</p>
                         <p className="mt-1 text-red-100/85">Updates reconnect automatically while scans are in progress.</p>
                       </div>
                     )}
@@ -1046,7 +1058,7 @@ export default function ScanActivityMonitor({
                     <div>
                       <p className="text-xs font-extrabold uppercase tracking-[0.12em] text-red-100">Warning</p>
                       <p className="mt-0.5 text-sm font-semibold leading-relaxed text-white">
-                        OpenSSL scanning endpoint appears unavailable. Live scans may stall until the service recovers.
+                        {serviceWarningMessage}
                       </p>
                       {serviceUnavailableCountdownText && (
                         <p className="mt-1 text-xs font-extrabold uppercase tracking-[0.12em] text-red-100">
@@ -1103,7 +1115,7 @@ export default function ScanActivityMonitor({
                             {streamStatus === "error"
                               ? "Connection interrupted. Reconnecting automatically..."
                               : !hasActiveSharedScan
-                                ? "No active full/group scan detected."
+                                ? "No active scan detected."
                               : "Live updates are paused until you press Start."}
                           </p>
                           <p className="mt-1.5 text-[1.02rem] leading-relaxed font-medium text-[#8a5d33]/80">
@@ -1111,7 +1123,7 @@ export default function ScanActivityMonitor({
                               ? "If a scan is still running, this monitor will reconnect and resume live updates. If it completed, this panel will switch back to idle."
                               : !hasActiveSharedScan
                                 ? "Press Sync now to refresh activity."
-                              : "This checks for an active shared scan and only opens SSE when there is work in progress."}
+                              : "This checks for active shared scan work and only opens SSE when there is work in progress."}
                           </p>
                           <p className="mt-1 text-xs font-semibold text-[#6b0000]">{lastSyncText}</p>
                           {error && (
@@ -1158,7 +1170,7 @@ export default function ScanActivityMonitor({
                       <Clock3 className="h-10 w-10 text-[#8a5d33]/25" />
                       <h3 className="mt-4 text-xl font-black text-[#3d200a]">No scan batches yet</h3>
                       <p className="mt-2 max-w-md text-sm font-semibold text-[#8a5d33]/70">
-                        Once someone in this organization starts a single, group, or full OpenSSL scan, it will appear here with shared progress.
+                        Once someone in this organization starts a scan or port-discovery run, it will appear here with shared progress.
                       </p>
                     </div>
                   )}
@@ -1174,7 +1186,7 @@ export default function ScanActivityMonitor({
                           <div key={batch.id} className="rounded-2xl border border-amber-500/10 bg-[#fffdf9] p-4">
                             <div className="flex items-start justify-between gap-3">
                               <div>
-                                <p className="text-sm font-black text-[#3d200a]">{batchLabel(batch.type)}</p>
+                                <p className="text-sm font-black text-[#3d200a]">{batchLabel(batch.type, batch.engine)}</p>
                                 <p className="mt-1 text-xs font-semibold text-[#8a5d33]/65">
                                   {batch.initiatedBy?.name || batch.initiatedBy?.email || "Unknown"} • {formatWhen(batch.createdAt)}
                                 </p>
@@ -1236,7 +1248,7 @@ export default function ScanActivityMonitor({
                               aria-expanded={isOpen}
                             >
                               <div>
-                                <p className="scan-history-title text-sm font-black text-[#3d200a]">{batchLabel(entry.type)}</p>
+                                <p className="scan-history-title text-sm font-black text-[#3d200a]">{batchLabel(entry.type, entry.engine)}</p>
                                 <p className="scan-history-meta mt-1 text-xs font-semibold text-[#8a5d33]/70">
                                   {formatWhen(entry.completedAt || entry.createdAt)}
                                 </p>

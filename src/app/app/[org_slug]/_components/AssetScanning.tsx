@@ -692,15 +692,13 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                 <h2 className={`${isHeaderCompact ? "text-xl" : "text-2xl"} font-black text-[#3d200a] tracking-tight transition-all duration-300`}>OpenSSL TLS Scanning</h2>
                 {isHeaderCompact && (
                   <div className="flex items-center gap-1.5">
-                    {isAdmin && (
-                      <Link
-                        href={`/app/${org.slug}/explore`}
-                        data-tip="Open Explorer"
-                        className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] text-[#5a3500] shadow-sm transition-all hover:brightness-105"
-                      >
-                        <Telescope className="h-4 w-4" />
-                      </Link>
-                    )}
+                    <Link
+                      href={`/app/${org.slug}/explore`}
+                      data-tip="Open Explorer"
+                      className="action-tip inline-flex h-9 w-9 items-center justify-center rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] text-[#5a3500] shadow-sm transition-all hover:brightness-105"
+                    >
+                      <Telescope className="h-4 w-4" />
+                    </Link>
                     {canScan && activeBatch && (
                       <button
                         onClick={() => void handleStopBatch(activeBatch.id)}
@@ -739,15 +737,13 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
               </p>
               {!isHeaderCompact && (
               <div className="mt-4 flex flex-wrap gap-2">
-                {isAdmin && (
-                  <Link
-                    href={`/app/${org.slug}/explore`}
-                    className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] px-5 py-2 text-sm font-bold text-[#5a3500] shadow-sm transition-all hover:brightness-105"
-                  >
-                    <Telescope className="h-4 w-4" />
-                    Open Explorer
-                  </Link>
-                )}
+                <Link
+                  href={`/app/${org.slug}/explore`}
+                  className="inline-flex items-center gap-2 rounded-full border border-amber-300 bg-linear-to-r from-[#f5cf58] to-[#eab308] px-5 py-2 text-sm font-bold text-[#5a3500] shadow-sm transition-all hover:brightness-105"
+                >
+                  <Telescope className="h-4 w-4" />
+                  Open Explorer
+                </Link>
                 {canScan && (
                   <>
                   {activeBatch && (

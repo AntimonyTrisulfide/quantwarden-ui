@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
+import { normalizeAssetOpenPorts } from "@/lib/port-discovery";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 
@@ -30,7 +32,7 @@ export async function GET(req: NextRequest) {
     let assets: any[] = [];
     try {
       assets = await prisma.$queryRawUnsafe<any[]>(
-        `SELECT id, value, type, "isRoot", "parentId", "createdAt", "scanStatus", "lastScanDate" FROM "asset" WHERE "organizationId" = $1 ORDER BY "createdAt" DESC`,
+        `SELECT id, value, type, "isRoot", "parentId", "resolvedIp", "openPorts", "createdAt", "scanStatus", "lastScanDate", "portDiscoveryStatus", "lastPortDiscoveryDate" FROM "asset" WHERE "organizationId" = $1 ORDER BY "createdAt" DESC`,
         orgId
       );
     } catch(err) {
@@ -57,39 +59,45 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { orgId, value, type, isRoot, parentId } = await req.json();
+    const { orgId, value, type, isRoot, parentId, openPorts } = await req.json();
 
     if (!orgId || !value) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // Verify permissions (admin or owner required to add assets)
-    const memberRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-      `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-      orgId,
-      session.user.id
-    );
-
-    if (memberRows.length === 0 || (memberRows[0].role !== "owner" && memberRows[0].role !== "admin")) {
-      return NextResponse.json({ error: "Forbidden: Only owners and admins can add assets." }, { status: 403 });
+    const access = await getOrgMemberAccess(orgId, session.user.id);
+    if (!access?.canManageAssets) {
+      return NextResponse.json({ error: "Forbidden: You do not have asset management permission." }, { status: 403 });
     }
 
     const assetId = crypto.randomUUID();
     let query = "";
-    const params: any[] = [assetId, value, type, isRoot, orgId, false, new Date()];
+    const normalizedOpenPorts = normalizeAssetOpenPorts(openPorts);
+    const params: any[] = [assetId, value, type, isRoot, orgId, false, JSON.stringify(normalizedOpenPorts), new Date()];
     
     if (parentId) {
-      query = `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "createdAt", "parentId") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`;
+      query = `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "openPorts", "createdAt", "parentId") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
       params.push(parentId);
     } else {
-      query = `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7)`;
+      query = `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "openPorts", "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`;
     }
 
     try {
       await prisma.$executeRawUnsafe(query, ...params);
     } catch (dbError: any) {
-      // Ignore unique constraint violation, meaning it's already there
-      if (dbError.code !== 'P2002' && !dbError.message?.includes('unique constraint')) {
+      const missingNewColumns =
+        typeof dbError?.message === "string" &&
+        (dbError.message.includes("openPorts") || dbError.message.includes("resolvedIp"));
+
+      if (missingNewColumns) {
+        const legacyParams: any[] = [assetId, value, type, isRoot, orgId, false, new Date()];
+        const legacyQuery = parentId
+          ? `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "createdAt", "parentId") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+          : `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7)`;
+
+        if (parentId) legacyParams.push(parentId);
+        await prisma.$executeRawUnsafe(legacyQuery, ...legacyParams);
+      } else if (dbError.code !== 'P2002' && !dbError.message?.includes('unique constraint')) {
         throw dbError;
       }
     }
@@ -122,15 +130,9 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // Verify permissions (admin or owner required to remove assets)
-    const memberRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-      `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-      orgId,
-      session.user.id
-    );
-
-    if (memberRows.length === 0 || (memberRows[0].role !== "owner" && memberRows[0].role !== "admin")) {
-      return NextResponse.json({ error: "Forbidden: Only owners and admins can remove assets." }, { status: 403 });
+    const access = await getOrgMemberAccess(orgId, session.user.id);
+    if (!access?.canManageAssets) {
+      return NextResponse.json({ error: "Forbidden: You do not have asset management permission." }, { status: 403 });
     }
 
     await prisma.$executeRawUnsafe(`DELETE FROM "asset" WHERE id = $1 AND "organizationId" = $2`, id, orgId);
@@ -138,6 +140,65 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Asset delete error:", error);
+    return NextResponse.json(
+      { error: "Something went wrong." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const session = await auth.api.getSession({
+      headers: await headers(),
+    });
+
+    if (!session?.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { orgId, id, openPorts } = await req.json();
+
+    if (!orgId || !id) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    const access = await getOrgMemberAccess(orgId, session.user.id);
+    if (!access?.canManageAssets) {
+      return NextResponse.json({ error: "Forbidden: You do not have asset management permission." }, { status: 403 });
+    }
+
+    const normalizedOpenPorts = normalizeAssetOpenPorts(openPorts);
+    try {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "asset"
+         SET "openPorts" = $1
+         WHERE id = $2 AND "organizationId" = $3`,
+        JSON.stringify(normalizedOpenPorts),
+        id,
+        orgId
+      );
+    } catch (dbError: any) {
+      const missingOpenPortsColumn =
+        typeof dbError?.message === "string" &&
+        dbError.message.includes(`column "openPorts" of relation "asset" does not exist`);
+
+      if (missingOpenPortsColumn) {
+        return NextResponse.json(
+          {
+            error: `The database schema is missing the asset open ports column. Please run Prisma schema sync on this database instance first.`,
+            code: "MISSING_OPEN_PORTS_COLUMN",
+          },
+          { status: 409 }
+        );
+      }
+
+      throw dbError;
+    }
+
+    return NextResponse.json({ success: true, asset: { id, openPorts: normalizedOpenPorts } });
+  } catch (error) {
+    console.error("Asset patch error:", error);
     return NextResponse.json(
       { error: "Something went wrong." },
       { status: 500 }

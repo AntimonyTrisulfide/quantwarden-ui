@@ -6,7 +6,6 @@ import {
   Shield,
   Users,
   ArrowLeft,
-  ChevronRight,
   Building2,
   User,
 } from "lucide-react";
@@ -14,9 +13,8 @@ import TeamManagement from "./TeamManagement";
 import AssetManagement from "./AssetManagement";
 import AssetScanning from "./AssetScanning";
 import OrgOverview from "./OrgOverview";
-import NmapScanning from "./NmapScanning";
-import NmapOverview from "./NmapOverview";
-import { Activity, Server } from "lucide-react";
+import RoleManagement from "./RoleManagement";
+import { Activity } from "lucide-react";
 import type { DashboardSection } from "./dashboard-sections";
 import ScanActivityMonitor from "./ScanActivityMonitor";
 
@@ -25,6 +23,9 @@ interface OrgDashboardProps {
   currentUserRole: string;
   currentUserId: string;
   activeSection: DashboardSection;
+  canManageTeam: boolean;
+  canManageRoles: boolean;
+  canManageAssets: boolean;
   canScan: boolean;
 }
 
@@ -32,16 +33,15 @@ const navItems = [
   { id: "overview", label: "Security Overview", icon: Activity },
   { id: "asset", label: "Asset Management", icon: Shield },
   { id: "scan", label: "Asset Scanning", icon: Shield },
-  { id: "nmap-overview", label: "Nmap Overview", icon: Activity },
-  { id: "nmap-scan", label: "Nmap Scanning", icon: Server },
   { id: "team", label: "Team Management", icon: Users },
 ];
 
-export default function OrgDashboard({ org, currentUserRole, currentUserId, activeSection, canScan }: OrgDashboardProps) {
+export default function OrgDashboard({ org, currentUserRole, currentUserId, activeSection, canManageTeam, canManageRoles, canManageAssets, canScan }: OrgDashboardProps) {
   const { data: sessionData } = useSession();
   const user = sessionData?.user;
 
-  const isAdmin = currentUserRole === "owner" || currentUserRole === "admin";
+  // Treat 'Administrator' and 'admin' as equivalent
+  const isAdmin = ["owner", "admin", "administrator"].includes(currentUserRole?.toLowerCase?.() ?? "");
 
   const initials = user?.name
     ? user.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)
@@ -97,7 +97,6 @@ export default function OrgDashboard({ org, currentUserRole, currentUserId, acti
               >
                 <Icon className={`h-4.5 w-4.5 shrink-0 ${active ? "text-white" : "text-red-300 group-hover:text-white"}`} />
                 <span className="font-bold">{item.label}</span>
-                <ChevronRight className={`ml-auto h-4 w-4 transition-transform ${active ? "rotate-90 text-white/50" : "text-red-400 group-hover:text-white/50"}`} />
               </Link>
             );
           })}
@@ -167,7 +166,8 @@ export default function OrgDashboard({ org, currentUserRole, currentUserId, acti
               org={org}
               currentUserRole={currentUserRole}
               currentUserId={currentUserId}
-              isAdmin={isAdmin}
+              canManageTeam={canManageTeam}
+              canManageRoles={canManageRoles}
             />
           )}
           {activeSection === "asset" && (
@@ -175,7 +175,8 @@ export default function OrgDashboard({ org, currentUserRole, currentUserId, acti
               org={org}
               currentUserRole={currentUserRole}
               currentUserId={currentUserId}
-              isAdmin={isAdmin}
+              canManageAssets={canManageAssets}
+              canScan={canScan}
             />
           )}
           {activeSection === "scan" && (
@@ -185,16 +186,11 @@ export default function OrgDashboard({ org, currentUserRole, currentUserId, acti
               canScan={canScan}
             />
           )}
-          {activeSection === "nmap-overview" && (
-            <NmapOverview
+          {activeSection === "roles" && (
+            <RoleManagement
               org={org}
-              isAdmin={isAdmin}
-            />
-          )}
-          {activeSection === "nmap-scan" && (
-            <NmapScanning
-              org={org}
-              isAdmin={isAdmin}
+              currentUserRole={currentUserRole}
+              canManageRoles={canManageRoles}
             />
           )}
         </div>

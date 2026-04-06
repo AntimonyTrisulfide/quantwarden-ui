@@ -2,9 +2,8 @@ export const dashboardSections = [
   "overview",
   "asset",
   "scan",
-  "nmap-overview",
-  "nmap-scan",
   "team",
+  "roles",
 ] as const;
 
 export type DashboardSection = (typeof dashboardSections)[number];

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 
@@ -29,14 +30,8 @@ export async function GET(req: NextRequest) {
     return new NextResponse("Missing assetId or orgId", { status: 400 });
   }
 
-  // Verify permissions
-  const memberRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-    `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-    orgId,
-    session.user.id
-  );
-
-  if (memberRows.length === 0 || (memberRows[0].role !== "owner" && memberRows[0].role !== "admin")) {
+  const access = await getOrgMemberAccess(orgId, session.user.id);
+  if (!access?.canManageAssets) {
     return new NextResponse("Forbidden", { status: 403 });
   }
 
@@ -115,7 +110,10 @@ export async function GET(req: NextRequest) {
 
         } catch (fetchErr: any) {
           console.error("Discover API fetch error:", fetchErr);
-          sendEvent("error", { message: `Subfinder failed: ${fetchErr.message}` });
+          sendEvent("error", {
+            code: "SUBFINDER_UNAVAILABLE",
+            message: `Subfinder failed: ${fetchErr.message}`,
+          });
           if(keepAliveInterval) clearInterval(keepAliveInterval);
           try { controller.close(); } catch(e){}
           return;
@@ -130,17 +128,27 @@ export async function GET(req: NextRequest) {
           try {
             const leafId = crypto.randomUUID();
             await prisma.$executeRawUnsafe(
-              `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "createdAt", "parentId") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+              `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "openPorts", "createdAt", "parentId")
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
               leafId,
               sub,
               getAssetType(sub),
               false,
               orgId,
               false,
+              JSON.stringify([{ number: 443, protocol: "tcp" }]),
               new Date(),
               assetId
             );
-            newAssets.push({ id: leafId, value: sub, type: getAssetType(sub), parentId: assetId, addedAt: new Date().toISOString() });
+            newAssets.push({
+              id: leafId,
+              value: sub,
+              type: getAssetType(sub),
+              parentId: assetId,
+              addedAt: new Date().toISOString(),
+              resolvedIp: null,
+              openPorts: JSON.stringify([{ number: 443, protocol: "tcp" }]),
+            });
           } catch (dbErr: any) {
             // Probably unqiue constraint, skip
           }

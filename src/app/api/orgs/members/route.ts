@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 
@@ -67,14 +68,9 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: "Missing fields" }, { status: 400 });
     }
 
-    // Check caller is owner or admin
-    const callerRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-      `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-      organizationId,
-      session.user.id
-    );
-    if (callerRows.length === 0 || (callerRows[0].role !== "owner" && callerRows[0].role !== "admin")) {
-      return NextResponse.json({ error: "Forbidden: Only owners and admins can change roles." }, { status: 403 });
+    const callerAccess = await getOrgMemberAccess(organizationId, session.user.id);
+    if (!callerAccess?.canManageTeam) {
+      return NextResponse.json({ error: "Forbidden: You do not have team management permission." }, { status: 403 });
     }
 
     // Cannot change owner's role
@@ -89,11 +85,6 @@ export async function PATCH(req: NextRequest) {
     if (targetRows[0].role === "owner") {
       return NextResponse.json({ error: "Cannot change the owner's role." }, { status: 400 });
     }
-    // Admin cannot change another admin's role (only owner can)
-    if (targetRows[0].role === "admin" && callerRows[0].role !== "owner") {
-      return NextResponse.json({ error: "Only the owner can change admin roles." }, { status: 403 });
-    }
-
     await prisma.$executeRawUnsafe(
       `UPDATE "member" SET role = $1 WHERE id = $2 AND "organizationId" = $3`,
       newRole,
@@ -139,22 +130,13 @@ export async function DELETE(req: NextRequest) {
         return NextResponse.json({ error: "Owner cannot leave the organization. Transfer ownership first." }, { status: 400 });
       }
     } else {
-      // Check caller is owner or admin
-      const callerRows = await prisma.$queryRawUnsafe<{ role: string }[]>(
-        `SELECT role FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
-        organizationId,
-        session.user.id
-      );
-      if (callerRows.length === 0 || (callerRows[0].role !== "owner" && callerRows[0].role !== "admin")) {
-        return NextResponse.json({ error: "Forbidden: Only owners and admins can remove members." }, { status: 403 });
+      const callerAccess = await getOrgMemberAccess(organizationId, session.user.id);
+      if (!callerAccess?.canManageTeam) {
+        return NextResponse.json({ error: "Forbidden: You do not have team management permission." }, { status: 403 });
       }
       // Cannot remove the owner
       if (targetRows[0].role === "owner") {
         return NextResponse.json({ error: "Cannot remove the organization owner." }, { status: 400 });
-      }
-      // Admin cannot remove another admin
-      if (targetRows[0].role === "admin" && callerRows[0].role !== "owner") {
-        return NextResponse.json({ error: "Only the owner can remove admins." }, { status: 403 });
       }
     }
 

@@ -2,6 +2,7 @@ export type ScanBatchType = "single" | "group" | "full";
 export type ScanBatchStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type ScanItemStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 export type ScanHistoryCategory = "passed" | "timeout" | "dnsExpired" | "failed";
+export type ScanEngine = "openssl" | "portDiscovery";
 
 export interface ScanInitiator {
   id: string;
@@ -22,6 +23,7 @@ export interface ScanActivityItem {
 export interface ScanActivityBatch {
   id: string;
   organizationId: string;
+  engine: ScanEngine;
   type: ScanBatchType;
   status: ScanBatchStatus;
   totalAssets: number;
@@ -40,6 +42,7 @@ export interface ScanActivityBatch {
 export interface ScanLockState {
   active: boolean;
   batchId: string | null;
+  engine: ScanEngine | null;
   type: ScanBatchType | null;
   status: ScanBatchStatus | null;
   message: string | null;
@@ -50,6 +53,7 @@ export interface ScanLockState {
 
 export interface ScanHistoryEntry {
   batchId: string;
+  engine: ScanEngine;
   type: ScanBatchType;
   status: ScanBatchStatus;
   createdAt: string;
@@ -83,6 +87,7 @@ export interface ScanHistoryEntry {
 export interface ScanFailureEntry {
   scanId: string;
   batchId: string;
+  engine: ScanEngine;
   batchType: ScanBatchType;
   batchStatus: ScanBatchStatus;
   assetId: string;

@@ -4,20 +4,25 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getOrgScanAccess } from "@/lib/org-scan-permissions";
 import { getOrgScanActivity } from "@/lib/scan-batch-server";
-import type { ScanBatchType } from "@/lib/scan-activity-types";
+import { getEnabledPortList, normalizePortDiscoveryConfig } from "@/lib/port-discovery";
+import type { ScanBatchType, ScanEngine } from "@/lib/scan-activity-types";
 
 interface CreateBatchBody {
   orgId?: string;
   type?: ScanBatchType;
+  engine?: ScanEngine;
   assetIds?: string[];
+  configSnapshot?: unknown;
 }
 
 interface ActiveLockRow {
   id: string;
+  engine: ScanEngine;
   type: ScanBatchType;
 }
 
 const VALID_TYPES = new Set<ScanBatchType>(["single", "group", "full"]);
+const VALID_ENGINES = new Set<ScanEngine>(["openssl", "portDiscovery"]);
 
 export async function POST(req: NextRequest) {
   try {
@@ -29,6 +34,7 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as CreateBatchBody;
     const orgId = body.orgId;
     const type = body.type;
+    const engine = body.engine && VALID_ENGINES.has(body.engine) ? body.engine : "openssl";
     const assetIds = Array.isArray(body.assetIds) ? Array.from(new Set(body.assetIds.filter(Boolean))) : [];
 
     if (!orgId || !type || !VALID_TYPES.has(type) || assetIds.length === 0) {
@@ -49,10 +55,9 @@ export async function POST(req: NextRequest) {
       );
 
       const lockRows = await tx.$queryRawUnsafe<ActiveLockRow[]>(
-        `SELECT b.id, b.type
+        `SELECT b.id, b.engine, b.type
          FROM "asset_scan_batch" b
          WHERE b."organizationId" = $1
-           AND b.type IN ('group', 'full')
            AND b.status IN ('queued', 'running')
          ORDER BY b."createdAt" DESC
          LIMIT 1`,
@@ -65,20 +70,33 @@ export async function POST(req: NextRequest) {
           ok: false as const,
           status: 409,
           payload: {
-            error: lock.type === "group"
-              ? "A group scan is already running for this organization."
-              : "A full scan is already running for this organization.",
+            error:
+              lock.engine === "portDiscovery"
+                ? lock.type === "single"
+                  ? "A port discovery scan is already running for this organization."
+                  : "A port discovery batch is already running for this organization."
+                : lock.type === "group"
+                  ? "An OpenSSL group scan is already running for this organization."
+                  : lock.type === "single"
+                    ? "An OpenSSL scan is already running for this organization."
+                    : "An OpenSSL full scan is already running for this organization.",
             lockBatchId: lock.id,
+            lockEngine: lock.engine,
             lockType: lock.type,
           },
         };
       }
 
+      const assetTypeFilter =
+        engine === "portDiscovery"
+          ? `type IN ('domain', 'ip')`
+          : `type = 'domain'`;
+
       const assetRows = await tx.$queryRawUnsafe<{ id: string; value: string }[]>(
         `SELECT id, value
          FROM "asset"
          WHERE "organizationId" = $1
-           AND type = 'domain'
+           AND ${assetTypeFilter}
            AND id = ANY($2::text[])
          ORDER BY value ASC`,
         orgId,
@@ -89,7 +107,7 @@ export async function POST(req: NextRequest) {
         return {
           ok: false as const,
           status: 400,
-          payload: { error: "No scannable domain assets were selected." },
+          payload: { error: engine === "portDiscovery" ? "No scannable assets were selected." : "No scannable domain assets were selected." },
         };
       }
 
@@ -131,28 +149,44 @@ export async function POST(req: NextRequest) {
         };
       }
 
+      const configSnapshot =
+        engine === "portDiscovery"
+          ? normalizePortDiscoveryConfig(body.configSnapshot)
+          : null;
+
+      if (engine === "portDiscovery" && getEnabledPortList(configSnapshot.entries).length === 0) {
+        return {
+          ok: false as const,
+          status: 400,
+          payload: { error: "Select at least one enabled port before starting port discovery." },
+        };
+      }
+
       const scanIds = batchAssets.map(() => crypto.randomUUID());
       const scanAssetIds = batchAssets.map((asset) => asset.id);
 
       await tx.$executeRawUnsafe(
         `INSERT INTO "asset_scan_batch"
-          (id, "organizationId", "initiatedByUserId", type, status, "totalAssets", "completedAssets", "failedAssets", "createdAt")
-         VALUES ($1, $2, $3, $4, 'queued', $5, 0, 0, $6)`,
+          (id, "organizationId", "initiatedByUserId", engine, type, status, "configSnapshot", "totalAssets", "completedAssets", "failedAssets", "createdAt")
+         VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, 0, 0, $8)`,
         batchId,
         orgId,
         session.user.id,
+        engine,
         type,
+        configSnapshot ? JSON.stringify(configSnapshot) : null,
         batchAssets.length,
         now
       );
 
       await tx.$executeRawUnsafe(
         `INSERT INTO "asset_scan" (id, "assetId", "batchId", type, status, "createdAt")
-         SELECT scan_row.scan_id, scan_row.asset_id, $3, 'openssl', 'pending', $4
+         SELECT scan_row.scan_id, scan_row.asset_id, $3, $4, 'pending', $5
          FROM unnest($1::text[], $2::text[]) AS scan_row(scan_id, asset_id)`,
         scanIds,
         scanAssetIds,
         batchId,
+        engine,
         now
       );
 

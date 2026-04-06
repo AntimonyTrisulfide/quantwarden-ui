@@ -38,6 +38,7 @@ model User {
   invitations   Invitation[]
   joinRequests  JoinRequest[]
   initiatedScanBatches AssetScanBatch[] @relation("AssetScanBatchInitiator")
+  updatedPortDiscoveryConfigs OrganizationPortDiscoveryConfig[] @relation("OrganizationPortDiscoveryConfigUpdater")
 
   @@unique([email])
   @@map("user")
@@ -106,6 +107,7 @@ model Organization {
   roles        Role[]
   assets       Asset[]
   assetScanBatches AssetScanBatch[]
+  portDiscoveryConfig OrganizationPortDiscoveryConfig?
   nmapAssets   NmapAsset[]
   joinRequests JoinRequest[]
 
@@ -183,8 +185,12 @@ model Asset {
   parent         Asset?       @relation("AssetHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
   children       Asset[]      @relation("AssetHierarchy")
   verified       Boolean      @default(false)
+  resolvedIp     String?      // The resolved IP address for domain/subdomain assets
+  openPorts      String?      // JSON string array of { number, protocol } open ports; defaults to [{ number: 443, protocol: "tcp" }] until discovery runs
   scanStatus     String       @default("idle") // idle, scanning, failed
   lastScanDate   DateTime?
+  portDiscoveryStatus String  @default("idle") // idle, scanning, completed, expired, failed
+  lastPortDiscoveryDate DateTime?
   scans          AssetScan[]
   createdAt      DateTime     @default(now())
 
@@ -216,8 +222,10 @@ model AssetScanBatch {
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   initiatedByUserId String
   initiatedBy       User         @relation("AssetScanBatchInitiator", fields: [initiatedByUserId], references: [id], onDelete: Cascade)
+  engine            String       @default("openssl") // openssl, portDiscovery
   type              String       // single, group, full
   status            String       @default("queued") // queued, running, completed, failed
+  configSnapshot    String?
   totalAssets       Int          @default(0)
   completedAssets   Int          @default(0)
   failedAssets      Int          @default(0)
@@ -229,6 +237,21 @@ model AssetScanBatch {
   @@index([organizationId, status])
   @@index([initiatedByUserId])
   @@map("asset_scan_batch")
+}
+
+model OrganizationPortDiscoveryConfig {
+  id               String       @id @default(cuid())
+  organizationId   String       @unique
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  entries          String
+  probeBatchSize   Int          @default(5)
+  probeTimeoutMs   Int          @default(600)
+  updatedByUserId  String?
+  updatedBy        User?        @relation("OrganizationPortDiscoveryConfigUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@map("organization_port_discovery_config")
 }
 
 model NmapAsset {
