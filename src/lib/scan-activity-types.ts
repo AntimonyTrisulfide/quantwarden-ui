@@ -14,6 +14,8 @@ export interface ScanActivityItem {
   id: string;
   assetId: string;
   assetValue: string;
+  portNumber: number | null;
+  portProtocol: string | null;
   status: ScanItemStatus;
   createdAt: string;
   completedAt: string | null;
@@ -69,6 +71,8 @@ export interface ScanHistoryEntry {
     scanId: string;
     assetId: string;
     assetValue: string;
+    portNumber: number | null;
+    portProtocol: string | null;
     category: ScanHistoryCategory;
     error: string | null;
     createdAt: string;
@@ -78,6 +82,8 @@ export interface ScanHistoryEntry {
     scanId: string;
     assetId: string;
     assetValue: string;
+    portNumber: number | null;
+    portProtocol: string | null;
     error: string | null;
     createdAt: string;
     completedAt: string | null;
@@ -92,6 +98,8 @@ export interface ScanFailureEntry {
   batchStatus: ScanBatchStatus;
   assetId: string;
   assetValue: string;
+  portNumber: number | null;
+  portProtocol: string | null;
   error: string | null;
   createdAt: string;
   completedAt: string | null;

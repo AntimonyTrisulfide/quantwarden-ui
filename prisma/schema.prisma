@@ -206,6 +206,8 @@ model AssetScan {
   batchId     String?
   batch       AssetScanBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
   type        String   @default("openssl") // The type of TLS scan
+  portNumber  Int?
+  portProtocol String?
   status      String   @default("pending") // pending, running, completed, failed
   resultData  String?  // JSON text representation of the scanner output
   createdAt   DateTime @default(now())
@@ -213,6 +215,7 @@ model AssetScan {
 
   @@index([assetId])
   @@index([batchId])
+  @@index([assetId, portNumber, portProtocol])
   @@map("asset_scan")
 }
 

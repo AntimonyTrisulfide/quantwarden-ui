@@ -1,8 +1,7 @@
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { headers } from "next/headers";
 import NmapAssetIntelligenceClient from "./_components/NmapAssetIntelligenceClient";
+import { getSafeServerSession } from "@/lib/auth-session";
 
 export default async function NmapAssetIntelligencePage({
   params,
@@ -11,7 +10,7 @@ export default async function NmapAssetIntelligencePage({
 }) {
   const resolvedParams = await params;
 
-  const session = await auth.api.getSession({ headers: await headers() });
+  const session = await getSafeServerSession();
   if (!session?.user) redirect("/login");
 
   const orgRows = await prisma.$queryRawUnsafe<

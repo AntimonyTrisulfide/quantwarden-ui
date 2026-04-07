@@ -84,9 +84,13 @@ export interface OpenSSLProfileResponse {
 }
 
 export interface OpenSSLDerivedSummary {
-  scanState: "reachable" | "dns_missing";
+  scanState: "reachable" | "dns_missing" | "no_tls";
   dnsMissing: boolean;
+  noTlsDetected: boolean;
+  certificatePresent: boolean;
+  tlsEvidencePresent: boolean;
   dnsStatusLabel: string | null;
+  portSecurityLabel: string | null;
   certificateValid: boolean | null;
   tlsVersionSecure: boolean | null;
   strongCipher: boolean | null;
@@ -213,6 +217,16 @@ export function deriveOpenSSLScanSummary(payload: OpenSSLProfileResponse): OpenS
   const primaryProbe = getPrimaryProbe(payload.tls_versions || []);
   const certificate = payload.certificate || {};
   const supportedProbeCount = (payload.tls_versions || []).filter((probe) => probe.supported).length;
+  const certificatePresent = Boolean(
+    certificate.subject ||
+      certificate.subject_normalized ||
+      certificate.not_before ||
+      certificate.not_after ||
+      certificate.issuer ||
+      certificate.issuer_normalized ||
+      certificate.serial_number ||
+      certificate.san_dns?.length
+  );
   const dnsMissing =
     payload.resolved_ip === null &&
     supportedProbeCount === 0 &&
@@ -239,9 +253,21 @@ export function deriveOpenSSLScanSummary(payload: OpenSSLProfileResponse): OpenS
   const supportedTlsVersions = (payload.tls_versions || [])
     .filter((probe) => probe.supported)
     .map((probe) => probe.negotiated_protocol || probe.tls_version);
+  const tlsEvidencePresent = Boolean(
+    supportedProbeCount > 0 ||
+      primaryTlsVersion ||
+      negotiatedCipher ||
+      preferredCipher ||
+      payload.tls_negotiation_order?.length ||
+      payload.tls_key_exchange_algorithms?.length ||
+      payload.tls_encryption_algorithms?.length
+  );
+  const noTlsDetected = !dnsMissing && !certificatePresent && !tlsEvidencePresent;
 
   const warnings: string[] = [];
   if (dnsMissing) warnings.push("This domain no longer resolves in DNS.");
+  if (noTlsDetected) warnings.push("No TLS or certificate was detected on this port.");
+  if (noTlsDetected && payload.port === 80) warnings.push("This often indicates a plain HTTP service, but no TLS was detected on this port.");
   if (certificateValid === false) warnings.push("Certificate is expired or outside its validity window.");
   if (daysRemaining !== null && daysRemaining > 0 && daysRemaining <= 30) warnings.push(`Certificate expires in ${daysRemaining} days.`);
   if (selfSignedCert) warnings.push("Certificate appears to be self-signed.");
@@ -250,9 +276,13 @@ export function deriveOpenSSLScanSummary(payload: OpenSSLProfileResponse): OpenS
   if (strongCipher === false) warnings.push("Preferred cipher selection is not considered strong.");
 
   return {
-    scanState: dnsMissing ? "dns_missing" : "reachable",
+    scanState: dnsMissing ? "dns_missing" : noTlsDetected ? "no_tls" : "reachable",
     dnsMissing,
-    dnsStatusLabel: dnsMissing ? "DNS Expired" : null,
+    noTlsDetected,
+    certificatePresent,
+    tlsEvidencePresent,
+    dnsStatusLabel: dnsMissing ? "DNS Expired" : noTlsDetected ? "No TLS Detected" : null,
+    portSecurityLabel: dnsMissing ? "DNS Expired" : noTlsDetected ? "No TLS Detected" : null,
     certificateValid,
     tlsVersionSecure,
     strongCipher,

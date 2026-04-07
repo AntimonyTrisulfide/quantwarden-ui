@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getOrgScanAccess } from "@/lib/org-scan-permissions";
 import { getOrgScanActivity } from "@/lib/scan-batch-server";
 import { getEnabledPortList, normalizePortDiscoveryConfig } from "@/lib/port-discovery";
+import { getCurrentOpenSSLPorts } from "@/lib/openssl-port-rollup";
 import type { ScanBatchType, ScanEngine } from "@/lib/scan-activity-types";
 
 interface CreateBatchBody {
@@ -31,7 +32,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = (await req.json()) as CreateBatchBody;
+    let body: CreateBatchBody;
+    try {
+      const rawBody = await req.text();
+      if (!rawBody.trim()) {
+        return NextResponse.json({ error: "Missing batch payload." }, { status: 400 });
+      }
+
+      body = JSON.parse(rawBody) as CreateBatchBody;
+    } catch {
+      return NextResponse.json({ error: "Invalid batch payload." }, { status: 400 });
+    }
+
     const orgId = body.orgId;
     const type = body.type;
     const engine = body.engine && VALID_ENGINES.has(body.engine) ? body.engine : "openssl";
@@ -92,8 +104,8 @@ export async function POST(req: NextRequest) {
           ? `type IN ('domain', 'ip')`
           : `type = 'domain'`;
 
-      const assetRows = await tx.$queryRawUnsafe<{ id: string; value: string }[]>(
-        `SELECT id, value
+      const assetRows = await tx.$queryRawUnsafe<{ id: string; value: string; openPorts: string | null }[]>(
+        `SELECT id, value, "openPorts"
          FROM "asset"
          WHERE "organizationId" = $1
            AND ${assetTypeFilter}
@@ -162,8 +174,25 @@ export async function POST(req: NextRequest) {
         };
       }
 
-      const scanIds = batchAssets.map(() => crypto.randomUUID());
-      const scanAssetIds = batchAssets.map((asset) => asset.id);
+      const scanTargets =
+        engine === "openssl"
+          ? batchAssets.flatMap((asset) =>
+              getCurrentOpenSSLPorts(asset.openPorts).map((port) => ({
+                scanId: crypto.randomUUID(),
+                assetId: asset.id,
+                portNumber: port.number,
+                portProtocol: port.protocol,
+              }))
+            )
+          : batchAssets.map((asset) => ({
+              scanId: crypto.randomUUID(),
+              assetId: asset.id,
+              portNumber: null,
+              portProtocol: null,
+            }));
+
+      const scanIds = scanTargets.map((target) => target.scanId);
+      const scanAssetIds = scanTargets.map((target) => target.assetId);
 
       await tx.$executeRawUnsafe(
         `INSERT INTO "asset_scan_batch"
@@ -175,24 +204,42 @@ export async function POST(req: NextRequest) {
         engine,
         type,
         configSnapshot ? JSON.stringify(configSnapshot) : null,
-        batchAssets.length,
+        scanTargets.length,
         now
       );
 
-      await tx.$executeRawUnsafe(
-        `INSERT INTO "asset_scan" (id, "assetId", "batchId", type, status, "createdAt")
-         SELECT scan_row.scan_id, scan_row.asset_id, $3, $4, 'pending', $5
-         FROM unnest($1::text[], $2::text[]) AS scan_row(scan_id, asset_id)`,
-        scanIds,
-        scanAssetIds,
-        batchId,
-        engine,
-        now
-      );
+      if (engine === "openssl") {
+        const scanPortNumbers = scanTargets.map((target) => target.portNumber);
+        const scanPortProtocols = scanTargets.map((target) => target.portProtocol);
+
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "asset_scan" (id, "assetId", "batchId", type, "portNumber", "portProtocol", status, "createdAt")
+           SELECT scan_row.scan_id, scan_row.asset_id, $5, $6, scan_row.port_number, scan_row.port_protocol, 'pending', $7
+           FROM unnest($1::text[], $2::text[], $3::int[], $4::text[]) AS scan_row(scan_id, asset_id, port_number, port_protocol)`,
+          scanIds,
+          scanAssetIds,
+          scanPortNumbers,
+          scanPortProtocols,
+          batchId,
+          engine,
+          now
+        );
+      } else {
+        await tx.$executeRawUnsafe(
+          `INSERT INTO "asset_scan" (id, "assetId", "batchId", type, status, "createdAt")
+           SELECT scan_row.scan_id, scan_row.asset_id, $3, $4, 'pending', $5
+           FROM unnest($1::text[], $2::text[]) AS scan_row(scan_id, asset_id)`,
+          scanIds,
+          scanAssetIds,
+          batchId,
+          engine,
+          now
+        );
+      }
 
       return {
         ok: true as const,
-        queuedAssets: batchAssets.length,
+        queuedAssets: scanTargets.length,
       };
     }, {
       maxWait: 10_000,

@@ -34,10 +34,23 @@ interface AssetScanningProps {
 interface ScanData {
   id: string;
   type: string;
+  portNumber: number | null;
+  portProtocol: string | null;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   resultData: string | null;
   createdAt: string;
   completedAt: string | null;
+}
+
+interface PortTabData {
+  key: string;
+  number: number;
+  protocol: "tcp";
+  label: string;
+  latestScan: ScanData | null;
+  latestSuccessfulScan: ScanData | null;
+  latestTerminalScan: ScanData | null;
+  state: "unscanned" | "pending" | "running" | "completed" | "failed" | "cancelled" | "dnsExpired" | "noTls";
 }
 
 interface ScandAsset {
@@ -50,6 +63,15 @@ interface ScandAsset {
   lastScanDate?: string | null;
   latestScan: ScanData | null;
   latestSuccessfulScan?: ScanData | null;
+  primarySummaryScan?: ScanData | null;
+  primaryPortKey?: string | null;
+  currentTcpPorts: Array<{
+    number: number;
+    protocol: "tcp";
+    key: string;
+    label: string;
+  }>;
+  portTabs: PortTabData[];
 }
 
 function formatRelativeTime(value: string | null | undefined) {
@@ -78,16 +100,39 @@ function formatRelativeTime(value: string | null | undefined) {
   return format(date, "dd/MM/yyyy, HH:mm");
 }
 
+function portTargetKey(assetId: string, portNumber: number | null | undefined, portProtocol: string | null | undefined) {
+  return `${assetId}:${portNumber || 443}/${(portProtocol || "tcp").toLowerCase()}`;
+}
+
+function portTabTone(state: PortTabData["state"], active: boolean) {
+  if (active) {
+    if (state === "dnsExpired" || state === "noTls" || state === "failed") {
+      return "border-red-200 bg-red-600 text-white";
+    }
+    return "border-[#8B0000]/20 bg-[#8B0000] text-white";
+  }
+
+  if (state === "completed") return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  if (state === "dnsExpired") return "border-rose-200 bg-rose-50 text-rose-700";
+  if (state === "noTls") return "border-red-200 bg-red-50 text-red-700";
+  if (state === "failed") return "border-red-200 bg-red-50 text-red-700";
+  if (state === "running") return "border-amber-200 bg-amber-50 text-amber-700";
+  if (state === "pending") return "border-slate-200 bg-slate-50 text-slate-700";
+  if (state === "cancelled") return "border-stone-200 bg-stone-50 text-stone-700";
+  return "border-amber-200 bg-white text-[#8a5d33]";
+}
+
 export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningProps) {
   const [assets, setAssets] = useState<ScandAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
-  const [filterType, setFilterType] = useState<"all" | "successful" | "timeout" | "dnsExpired" | "unscanned">("all");
+  const [filterType, setFilterType] = useState<"all" | "successful" | "timeout" | "dnsExpired" | "noTls" | "unscanned">("all");
   const [expandedAssetId, setExpandedAssetId] = useState<string | null>(null);
+  const [selectedPortTabs, setSelectedPortTabs] = useState<Record<string, string>>({});
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isStoppingBatch, setIsStoppingBatch] = useState(false);
-  const [stableAssetCategory, setStableAssetCategory] = useState<Record<string, "successful" | "timeout" | "dnsExpired" | "unscanned">>({});
+  const [stableAssetCategory, setStableAssetCategory] = useState<Record<string, "successful" | "timeout" | "dnsExpired" | "noTls" | "unscanned">>({});
   const [isHeaderCompact, setIsHeaderCompact] = useState(false);
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const activitySnapshotRef = useRef<{
@@ -302,6 +347,17 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
           ] as const)
       )
   );
+  const activeTaskByPort = new Map(
+    (activity?.activeBatches || [])
+      .flatMap((batch) =>
+        batch.items
+          .filter((item) => item.status === "pending" || item.status === "running")
+          .map((item) => [
+            portTargetKey(item.assetId, item.portNumber, item.portProtocol),
+            { status: item.status, batchType: batch.type, createdAt: item.createdAt },
+          ] as const)
+      )
+  );
 
   const fullScan = activity?.activeBatches.find((batch) => batch.type === "full") || null;
   const groupScan = activity?.activeBatches.find((batch) => batch.type === "group") || null;
@@ -321,20 +377,28 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
 
   useEffect(() => {
     setStableAssetCategory((previous) => {
-      const next: Record<string, "successful" | "timeout" | "dnsExpired" | "unscanned"> = {};
+      const next: Record<string, "successful" | "timeout" | "dnsExpired" | "noTls" | "unscanned"> = {};
       let changed = false;
 
       for (const asset of domainAssets) {
         const hasActiveTask = activeTaskByAsset.has(asset.id);
         const previousCategory = previous[asset.id];
 
-        let terminalCategory: "successful" | "timeout" | "dnsExpired" | "unscanned" | null = null;
+        let terminalCategory: "successful" | "timeout" | "dnsExpired" | "noTls" | "unscanned" | null = null;
         if (asset.scanStatus === "expired") {
           terminalCategory = "dnsExpired";
+        } else if (asset.scanStatus === "noTls") {
+          terminalCategory = "noTls";
         } else if (asset.scanStatus === "failed") {
           terminalCategory = "timeout";
         } else if (asset.scanStatus === "completed") {
           terminalCategory = "successful";
+        } else if (asset.primarySummaryScan?.status === "completed" && parseOpenSSLScanResult(asset.primarySummaryScan.resultData).summary?.noTlsDetected) {
+          terminalCategory = "noTls";
+        } else if (asset.primarySummaryScan?.status === "completed") {
+          terminalCategory = "successful";
+        } else if (asset.latestScan?.status === "completed" && parseOpenSSLScanResult(asset.latestScan.resultData).summary?.noTlsDetected) {
+          terminalCategory = "noTls";
         } else if (asset.latestScan?.status === "completed") {
           terminalCategory = "successful";
         } else if (asset.latestScan?.status === "failed") {
@@ -365,6 +429,7 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
 
   const unscanned = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "unscanned").length;
   const dnsExpired = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "dnsExpired").length;
+  const noTls = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "noTls").length;
   const scanTimeout = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "timeout").length;
   const scanSuccessful = domainAssets.filter((asset) => stableAssetCategory[asset.id] === "successful").length;
 
@@ -378,6 +443,8 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
     filteredAssets = filteredAssets.filter((asset) => stableAssetCategory[asset.id] === "timeout");
   } else if (filterType === "dnsExpired") {
     filteredAssets = filteredAssets.filter((asset) => stableAssetCategory[asset.id] === "dnsExpired");
+  } else if (filterType === "noTls") {
+    filteredAssets = filteredAssets.filter((asset) => stableAssetCategory[asset.id] === "noTls");
   } else if (filterType === "unscanned") {
     filteredAssets = filteredAssets.filter((asset) => stableAssetCategory[asset.id] === "unscanned");
   }
@@ -443,12 +510,45 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
     const payload = parsed.raw;
     const summary = parsed.summary;
     const sans = payload.certificate.san_dns || [];
+    const noTlsDetected = summary.noTlsDetected;
+    const noTlsHint =
+      noTlsDetected && payload.port === 80
+        ? "Port 80 often indicates a plain HTTP service, and no TLS was detected here."
+        : null;
     const activeProbe =
       payload.tls_versions.find(
         (probe) => probe.supported && (probe.negotiated_protocol || probe.tls_version) === summary.primaryTlsVersion
       ) ||
       payload.tls_versions.find((probe) => probe.supported) ||
       null;
+
+    const certificateValidityValue = summary.dnsMissing
+      ? "Unavailable"
+      : noTlsDetected
+        ? "No certificate detected"
+        : summary.certificateValid === false
+          ? "Invalid"
+          : summary.certificateValid === true
+            ? "Valid"
+            : "Unknown";
+    const certificateValidityIcon = summary.dnsMissing || noTlsDetected || summary.certificateValid === false ? AlertTriangle : CheckCircle2;
+    const certificateValidityColor = summary.dnsMissing || noTlsDetected || summary.certificateValid === false ? "text-red-500" : "text-emerald-500";
+    const tlsProtocolValue = noTlsDetected ? "No TLS negotiated" : summary.primaryTlsVersion || "Unknown";
+    const preferredCipherValue = noTlsDetected ? "Not negotiated" : summary.preferredCipher || "Unknown";
+    const preferredCipherColor = noTlsDetected || summary.strongCipher === false ? "text-red-500" : "text-emerald-500";
+    const publicKeyValue = noTlsDetected
+      ? "Not applicable"
+      : summary.publicKeyAlgorithm && summary.publicKeyBits
+        ? `${summary.publicKeyAlgorithm} (${summary.publicKeyBits} bits)`
+        : "Unknown";
+    const publicKeyIcon = noTlsDetected || summary.keySizeAdequate === false ? AlertTriangle : CheckCircle2;
+    const publicKeyColor = noTlsDetected || summary.keySizeAdequate === false ? "text-red-500" : "text-emerald-500";
+    const strongCipherValue = noTlsDetected ? "Not applicable" : summary.strongCipher === true ? "Yes" : summary.strongCipher === false ? "No" : "Unknown";
+    const strongCipherIcon = noTlsDetected || summary.strongCipher === false ? AlertTriangle : CheckCircle2;
+    const strongCipherColor = noTlsDetected || summary.strongCipher === false ? "text-red-500" : summary.strongCipher === true ? "text-emerald-500" : "text-[#8a5d33]/55";
+    const downgradeValue = noTlsDetected ? "Not applicable" : summary.tlsVersionSecure === true ? "Yes" : summary.tlsVersionSecure === false ? "Weak TLS allowed" : "Unknown";
+    const downgradeIcon = noTlsDetected || summary.tlsVersionSecure === false ? AlertTriangle : CheckCircle2;
+    const downgradeColor = noTlsDetected || summary.tlsVersionSecure === false ? "text-red-500" : summary.tlsVersionSecure === true ? "text-emerald-500" : "text-[#8a5d33]/55";
 
     const Item = ({ label, icon: Icon, value, colorClass, title, children }: any) => (
       <div className="space-y-2">
@@ -467,39 +567,47 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
 
     return (
       <div className="p-5 bg-white rounded-xl border border-[#8a5d33]/10 shadow-sm space-y-6">
+        {noTlsDetected && (
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-red-500" />
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-red-700/70">No TLS Detected</p>
+                <p className="mt-1 text-sm font-semibold text-red-700">
+                  OpenSSL reached this port, but no TLS session or certificate was reported.
+                </p>
+                {noTlsHint && (
+                  <p className="mt-2 text-xs font-semibold text-red-700/80">{noTlsHint}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <Item
             label="Certificate Validity"
-            icon={summary.dnsMissing || summary.certificateValid === false ? AlertTriangle : CheckCircle2}
-            colorClass={summary.dnsMissing || summary.certificateValid === false ? "text-red-500" : "text-emerald-500"}
-            value={
-              summary.dnsMissing
-                ? "Unavailable"
-                : summary.certificateValid === false
-                  ? "Invalid"
-                  : summary.certificateValid === true
-                    ? "Valid"
-                    : "Unknown"
-            }
+            icon={certificateValidityIcon}
+            colorClass={certificateValidityColor}
+            value={certificateValidityValue}
           />
           <Item
             label="TLS Protocol"
             icon={Lock}
-            colorClass="text-blue-500"
-            value={summary.primaryTlsVersion || "Unknown"}
+            colorClass={noTlsDetected ? "text-red-500" : "text-blue-500"}
+            value={tlsProtocolValue}
           />
           <Item
             label="Expiry"
-            icon={Calendar}
-            colorClass={summary.dnsMissing ? "text-red-500" : summary.daysRemaining !== null && summary.daysRemaining > 30 ? "text-emerald-500" : "text-amber-500"}
-            value={summary.dnsMissing ? "DNS Expired" : summary.daysRemaining !== null ? `${summary.daysRemaining} days` : "Unknown"}
+            icon={summary.dnsMissing || noTlsDetected ? AlertTriangle : Calendar}
+            colorClass={summary.dnsMissing || noTlsDetected ? "text-red-500" : summary.daysRemaining !== null && summary.daysRemaining > 30 ? "text-emerald-500" : "text-amber-500"}
+            value={summary.dnsMissing ? "DNS Expired" : noTlsDetected ? "Not applicable" : summary.daysRemaining !== null ? `${summary.daysRemaining} days` : "Unknown"}
           />
           <Item
             label="Preferred Cipher"
             icon={ShieldCheck}
-            colorClass={summary.strongCipher === false ? "text-amber-500" : "text-emerald-500"}
+            colorClass={preferredCipherColor}
             title={summary.preferredCipher || undefined}
-            value={summary.preferredCipher || "Unknown"}
+            value={preferredCipherValue}
           />
         </div>
 
@@ -509,16 +617,16 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
           <Item
             label="Subject (Common Name)"
             icon={Globe}
-            colorClass="text-indigo-500"
+            colorClass={noTlsDetected ? "text-red-500" : "text-indigo-500"}
             title={summary.subjectCommonName || undefined}
-            value={summary.subjectCommonName || "Unknown"}
+            value={noTlsDetected ? "No certificate detected" : summary.subjectCommonName || "Unknown"}
           />
           <Item
             label="Issuer Authority"
             icon={Server}
-            colorClass="text-indigo-500"
+            colorClass={noTlsDetected ? "text-red-500" : "text-indigo-500"}
             title={summary.issuerCommonName || undefined}
-            value={summary.issuerCommonName || "Unknown"}
+            value={noTlsDetected ? "Not reported" : summary.issuerCommonName || "Unknown"}
           />
           <Item
             label="Subject Alt Names"
@@ -535,8 +643,8 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
           <Item
             label="Negotiated Group"
             icon={Lock}
-            colorClass="text-indigo-500"
-            value={summary.negotiatedGroup || "Not reported"}
+            colorClass={noTlsDetected ? "text-red-500" : "text-indigo-500"}
+            value={noTlsDetected ? "Not applicable" : summary.negotiatedGroup || "Not reported"}
           />
         </div>
 
@@ -545,27 +653,27 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <Item
             label="Public Key Size"
-            icon={summary.keySizeAdequate === false ? AlertTriangle : CheckCircle2}
-            colorClass={summary.keySizeAdequate === false ? "text-amber-500" : "text-emerald-500"}
-            value={summary.publicKeyAlgorithm && summary.publicKeyBits ? `${summary.publicKeyAlgorithm} (${summary.publicKeyBits} bits)` : "Unknown"}
+            icon={publicKeyIcon}
+            colorClass={publicKeyColor}
+            value={publicKeyValue}
           />
           <Item
             label="Signature Algorithm"
             icon={Zap}
-            colorClass="text-blue-500"
-            value={summary.signatureAlgorithm || "Unknown"}
+            colorClass={noTlsDetected ? "text-red-500" : "text-blue-500"}
+            value={noTlsDetected ? "Not applicable" : summary.signatureAlgorithm || "Unknown"}
           />
           <Item
             label="Strong Cipher"
-            icon={summary.strongCipher === false ? AlertTriangle : CheckCircle2}
-            colorClass={summary.strongCipher === false ? "text-amber-500" : "text-emerald-500"}
-            value={summary.strongCipher === false ? "No" : "Yes"}
+            icon={strongCipherIcon}
+            colorClass={strongCipherColor}
+            value={strongCipherValue}
           />
           <Item
             label="TLS Downgrade Safe"
-            icon={summary.tlsVersionSecure === false ? AlertTriangle : CheckCircle2}
-            colorClass={summary.tlsVersionSecure === false ? "text-amber-500" : "text-emerald-500"}
-            value={summary.tlsVersionSecure === false ? "Weak TLS allowed" : "Yes"}
+            icon={downgradeIcon}
+            colorClass={downgradeColor}
+            value={downgradeValue}
           />
         </div>
 
@@ -677,6 +785,116 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
         )}
       </div>
     );
+  };
+
+  const renderPortTabContent = (asset: ScandAsset, portTab: PortTabData | null) => {
+    if (!portTab) {
+      return (
+        <div className="p-4 bg-white rounded-xl border border-amber-200/60">
+          <p className="text-sm font-semibold text-[#8a5d33]/70">
+            No TCP ports are currently configured for this asset.
+          </p>
+        </div>
+      );
+    }
+
+    const liveTask = activeTaskByPort.get(portTargetKey(asset.id, portTab.number, portTab.protocol));
+    const effectiveState =
+      liveTask?.status === "running"
+        ? "running"
+        : liveTask?.status === "pending"
+          ? "pending"
+          : portTab.state;
+
+    if (effectiveState === "pending") {
+      return (
+        <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center gap-3">
+          <Clock className="w-5 h-5 text-slate-500 shrink-0" />
+          <p className="text-sm font-semibold text-slate-700">
+            OpenSSL scan for port {portTab.number}/TCP is queued and will start when a worker slot becomes free.
+          </p>
+        </div>
+      );
+    }
+
+    if (effectiveState === "running") {
+      return (
+        <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 flex items-center gap-3">
+          <Loader2 className="w-5 h-5 text-amber-500 animate-spin" />
+          <p className="text-sm font-semibold text-amber-700">
+            OpenSSL TLS scan for port {portTab.number}/TCP is currently running...
+          </p>
+        </div>
+      );
+    }
+
+    if (effectiveState === "unscanned") {
+      return (
+        <div className="p-4 bg-white rounded-xl border border-amber-200/60">
+          <p className="text-sm font-semibold text-[#8a5d33]/70">
+            Port {portTab.number}/TCP has not been scanned with OpenSSL yet.
+          </p>
+        </div>
+      );
+    }
+
+    if (effectiveState === "cancelled") {
+      return (
+        <div className="p-4 bg-stone-50 rounded-xl border border-stone-200 flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-stone-500 shrink-0" />
+          <p className="text-sm font-semibold text-stone-700">
+            The most recent OpenSSL scan for port {portTab.number}/TCP was cancelled.
+          </p>
+        </div>
+      );
+    }
+
+    if (effectiveState === "dnsExpired") {
+      return (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 shrink-0 text-red-500" />
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-red-700/70">DNS Expired</p>
+              <p className="mt-1 text-sm font-semibold text-red-700">
+                This domain no longer resolves in DNS, so OpenSSL could not negotiate TLS on port {portTab.number}/TCP.
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (effectiveState === "noTls") {
+      return (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 shrink-0 text-red-500" />
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-widest text-red-700/70">No TLS Detected</p>
+                <p className="mt-1 text-sm font-semibold text-red-700">
+                  OpenSSL reached port {portTab.number}/TCP, but no TLS session or certificate was reported.
+                </p>
+              </div>
+            </div>
+          </div>
+          {portTab.latestScan ? renderScanDetails(portTab.latestScan) : null}
+        </div>
+      );
+    }
+
+    if (!portTab.latestScan) {
+      return (
+        <div className="p-4 bg-white rounded-xl border border-amber-200/60">
+          <p className="text-sm font-semibold text-[#8a5d33]/70">
+            No OpenSSL result is available yet for port {portTab.number}/TCP.
+          </p>
+        </div>
+      );
+    }
+
+    return renderScanDetails(portTab.latestScan);
   };
 
   return (
@@ -908,6 +1126,20 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
           <div className="w-px h-6 bg-amber-500/20 hidden sm:block mx-1"></div>
 
           <button
+            onClick={() => setFilterType("noTls")}
+            className={`flex flex-col items-center px-3 py-1.5 rounded-xl transition-all outline-none ${filterType === "noTls" ? "bg-red-500/10" : "hover:bg-black/5"}`}
+          >
+            <span className="text-[9px] uppercase tracking-widest font-bold text-[#8a5d33]/50">No TLS</span>
+            {loading ? (
+              <span className="scan-stat-skeleton mt-1 h-4 w-7 rounded-md" aria-label="Loading no TLS count" />
+            ) : (
+              <span className="text-sm font-black text-red-700">{noTls}</span>
+            )}
+          </button>
+
+          <div className="w-px h-6 bg-amber-500/20 hidden sm:block mx-1"></div>
+
+          <button
             onClick={() => setFilterType("unscanned")}
             className={`flex flex-col items-center px-3 py-1.5 rounded-xl transition-all outline-none ${filterType === "unscanned" ? "bg-amber-500/10" : "hover:bg-black/5"}`}
           >
@@ -947,6 +1179,7 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
             const isQueued = task?.status === "pending";
             const isRunning = task?.status === "running";
             const isDnsExpired = asset.scanStatus === "expired";
+            const isNoTls = asset.scanStatus === "noTls";
             const assetCategory = stableAssetCategory[asset.id] || "unscanned";
             const statusLabel = isQueued
               ? "queued"
@@ -954,6 +1187,8 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                 ? "running"
                 : isDnsExpired || assetCategory === "dnsExpired"
                   ? "dns expired"
+                  : isNoTls || assetCategory === "noTls"
+                    ? "no tls"
                   : assetCategory === "successful"
                     ? "success"
                     : assetCategory === "timeout"
@@ -964,6 +1199,15 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
               : (asset.lastScanDate || asset.latestScan?.completedAt || asset.latestScan?.createdAt || null);
             const isExpanded = expandedAssetId === asset.id;
             const isSelected = selectedAssetIds.includes(asset.id);
+            const selectedPortKey =
+              selectedPortTabs[asset.id] ||
+              asset.primaryPortKey ||
+              asset.portTabs[0]?.key ||
+              null;
+            const selectedPortTab =
+              asset.portTabs.find((portTab) => portTab.key === selectedPortKey) ||
+              asset.portTabs[0] ||
+              null;
 
             return (
               <div key={asset.id} className="bg-white/60 rounded-xl border border-amber-500/10 transition-all hover:bg-white/80 overflow-hidden shadow-sm">
@@ -1007,10 +1251,11 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                               isQueued ? "text-slate-500" :
                               isRunning ? "text-amber-500 animate-pulse" :
                               statusLabel === "dns expired" ? "text-red-600" :
+                              statusLabel === "no tls" ? "text-red-600" :
                               statusLabel === "success" ? "text-emerald-500" :
                               statusLabel === "timeout" ? "text-red-500" : "text-[#8a5d33]/60"
                             }`}>
-                              <span title={statusLabel === "timeout" ? "Timeout Possibly Port Not Open" : undefined}>
+                              <span title={statusLabel === "timeout" ? "Timeout Possibly Port Not Open" : statusLabel === "no tls" ? "No TLS or certificate was detected on the latest scanned port." : undefined}>
                                 {statusLabel}
                               </span>
                             </span>
@@ -1062,41 +1307,57 @@ export default function AssetScanning({ org, isAdmin, canScan }: AssetScanningPr
                 {isExpanded && (
                   <div className="p-4 pt-0 border-t border-amber-500/10 mt-2 bg-linear-to-b from-transparent to-[#fdf8f0]/40">
                     <div className="pt-4">
-                      {isQueued ? (
-                        <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 flex items-center gap-3">
-                          <Clock className="w-5 h-5 text-slate-500 shrink-0" />
-                          <p className="text-sm font-semibold text-slate-700">
-                            This scan is queued and will start as soon as a worker slot becomes free.
-                          </p>
+                      <div className="space-y-4">
+                        <div className="flex flex-wrap gap-2">
+                          {asset.portTabs.map((portTab) => {
+                            const isActivePort = selectedPortKey === portTab.key;
+                            return (
+                              <button
+                                key={portTab.key}
+                                type="button"
+                                onClick={() =>
+                                  setSelectedPortTabs((current) => ({
+                                    ...current,
+                                    [asset.id]: portTab.key,
+                                  }))
+                                }
+                                className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-semibold transition ${portTabTone(portTab.state, isActivePort)}`}
+                              >
+                                <span>{portTab.label}</span>
+                                <span
+                                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                    isActivePort ? "bg-white/20 text-white" : "bg-white/70 text-current"
+                                  }`}
+                                >
+                                  {portTab.state === "completed"
+                                    ? "Passed"
+                                    : portTab.state === "dnsExpired"
+                                      ? "DNS"
+                                      : portTab.state === "noTls"
+                                        ? "No TLS"
+                                      : portTab.state === "failed"
+                                        ? "Failed"
+                                        : portTab.state === "running"
+                                          ? "Live"
+                                          : portTab.state === "pending"
+                                            ? "Queued"
+                                            : portTab.state === "cancelled"
+                                              ? "Stopped"
+                                              : "New"}
+                                </span>
+                              </button>
+                            );
+                          })}
                         </div>
-                      ) : isRunning ? (
-                        <div className="p-4 bg-amber-50 rounded-xl border border-amber-200 flex items-center gap-3">
-                          <Loader2 className="w-5 h-5 text-amber-500 animate-spin" />
-                          <div>
-                            <p className="text-sm font-semibold text-amber-700">OpenSSL TLS scan currently running...</p>
-                            {asset.latestScan?.status === "completed" && (
-                              <p className="mt-1 text-xs font-semibold text-amber-700/80">
-                                Previous completed result remains available on the asset details page while this refresh runs.
-                              </p>
-                            )}
+
+                        {selectedPortTab && (
+                          <div className="rounded-xl border border-amber-200/70 bg-white/60 px-4 py-3 text-xs font-semibold text-[#8a5d33]/75">
+                            Showing OpenSSL summary for <span className="font-black text-[#3d200a]">{selectedPortTab.label}</span>.
                           </div>
-                        </div>
-                      ) : (asset.latestSuccessfulScan || asset.latestScan) ? (
-                        <div className="space-y-3">
-                          {asset.latestScan?.status === "failed" && asset.latestSuccessfulScan && (
-                            <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
-                              The latest scan attempt timed out, so the most recent successful OpenSSL result is shown below.
-                            </div>
-                          )}
-                          {renderScanDetails(asset.latestSuccessfulScan || asset.latestScan!)}
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-white rounded-xl border border-amber-200/60">
-                          <p className="text-sm font-semibold text-[#8a5d33]/70">
-                            No completed scan is available yet for this asset.
-                          </p>
-                        </div>
-                      )}
+                        )}
+
+                        {renderPortTabContent(asset, selectedPortTab)}
+                      </div>
                     </div>
                   </div>
                 )}

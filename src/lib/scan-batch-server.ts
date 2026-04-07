@@ -11,6 +11,7 @@ import type {
   ScanHistoryEntry,
 } from "@/lib/scan-activity-types";
 import { parseOpenSSLScanResult } from "@/lib/openssl-scan";
+import { deriveOpenSSLAssetRollup } from "@/lib/openssl-port-rollup";
 import { isPortDiscoveryTimeoutResult, parsePortDiscoveryResponse } from "@/lib/port-discovery";
 
 export const MAX_OPENSSL_SCAN_CONCURRENCY = 5;
@@ -41,6 +42,8 @@ interface ScanRow {
   assetValue: string;
   assetType: string;
   type: ScanEngine;
+  portNumber: number | null;
+  portProtocol: string | null;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   resultData: string | null;
   createdAt: Date;
@@ -52,6 +55,8 @@ export interface ClaimedScanItem {
   batchId: string;
   assetId: string;
   assetValue: string;
+  portNumber: number | null;
+  portProtocol: string | null;
   engine: ScanEngine;
   batchType: ScanBatchType;
   configSnapshot: string | null;
@@ -81,6 +86,8 @@ function toBatch(batch: BatchRow, scans: ScanRow[]): ScanActivityBatch {
     id: scan.id,
     assetId: scan.assetId,
     assetValue: scan.assetValue,
+    portNumber: scan.portNumber,
+    portProtocol: scan.portProtocol,
     status: scan.status,
     createdAt: scan.createdAt.toISOString(),
     completedAt: scan.completedAt ? scan.completedAt.toISOString() : null,
@@ -162,7 +169,9 @@ function classifyHistoryScan(scan: ScanRow): ScanHistoryCategory | null {
 
   if (scan.status === "completed") {
     const parsed = parseOpenSSLScanResult(scan.resultData);
-    return parsed.summary?.dnsMissing ? "dnsExpired" : "passed";
+    if (parsed.summary?.dnsMissing) return "dnsExpired";
+    if (parsed.summary?.noTlsDetected) return "failed";
+    return "passed";
   }
 
   if (scan.status === "failed") {
@@ -182,6 +191,8 @@ function toHistoryEntry(batch: ScanActivityBatch, scans: ScanRow[]): ScanHistory
         scanId: scan.id,
         assetId: scan.assetId,
         assetValue: scan.assetValue,
+        portNumber: scan.portNumber,
+        portProtocol: scan.portProtocol,
         category,
         error: extractError(scan.resultData),
         createdAt: scan.createdAt.toISOString(),
@@ -280,6 +291,73 @@ export async function refreshScanBatch(batchId: string) {
   return rows[0] ?? null;
 }
 
+export async function refreshOpenSSLAssetState(assetId: string, orgId: string) {
+  const assetRows = await prisma.$queryRawUnsafe<{ id: string; openPorts: string | null }[]>(
+    `SELECT id, "openPorts"
+     FROM "asset"
+     WHERE id = $1
+       AND "organizationId" = $2
+     LIMIT 1`,
+    assetId,
+    orgId
+  );
+
+  const asset = assetRows[0];
+  if (!asset) return null;
+
+  const scanRows = await prisma.$queryRawUnsafe<ScanRow[]>(
+    `SELECT
+        s.id,
+        s."batchId",
+        s."assetId",
+        a.value as "assetValue",
+        a.type as "assetType",
+        s.type,
+        s."portNumber" as "portNumber",
+        s."portProtocol" as "portProtocol",
+        s.status,
+        s."resultData",
+        s."createdAt",
+        s."completedAt"
+      FROM "asset_scan" s
+      INNER JOIN "asset" a ON a.id = s."assetId"
+      WHERE s."assetId" = $1
+        AND a."organizationId" = $2
+        AND s.type = 'openssl'
+      ORDER BY
+        COALESCE(s."completedAt", s."createdAt") DESC,
+        s."createdAt" DESC`,
+    assetId,
+    orgId
+  );
+
+  const activeRows = await prisma.$queryRawUnsafe<{ activeCount: number }[]>(
+    `SELECT COUNT(*)::int as "activeCount"
+     FROM "asset_scan" s
+     INNER JOIN "asset_scan_batch" b ON b.id = s."batchId"
+     WHERE s."assetId" = $1
+       AND b."organizationId" = $2
+       AND s.type = 'openssl'
+       AND s.status IN ('pending', 'running')`,
+    assetId,
+    orgId
+  );
+
+  const rollup = deriveOpenSSLAssetRollup(scanRows, asset.openPorts);
+  const nextStatus = (activeRows[0]?.activeCount || 0) > 0 ? "scanning" : rollup.scanStatus;
+
+  await prisma.$executeRawUnsafe(
+    `UPDATE "asset"
+     SET "scanStatus" = $1, "lastScanDate" = $2
+     WHERE id = $3`,
+    nextStatus,
+    rollup.lastScanDate ? new Date(rollup.lastScanDate) : null,
+    assetId
+  );
+
+  return rollup;
+}
+
 export async function getActiveScanLock(orgId: string) {
   const rows = await prisma.$queryRawUnsafe<BatchRow[]>(
     `SELECT
@@ -325,6 +403,8 @@ export async function claimNextPendingScan(orgId: string): Promise<ClaimedScanIt
             s."batchId" as "batchId",
             s."assetId" as "assetId",
             a.value as "assetValue",
+            s."portNumber" as "portNumber",
+            s."portProtocol" as "portProtocol",
             b.engine as engine,
             b.type as "batchType",
             b."configSnapshot" as "configSnapshot"
@@ -358,6 +438,8 @@ export async function claimNextPendingScan(orgId: string): Promise<ClaimedScanIt
           next_scan."batchId",
           next_scan."assetId",
           next_scan."assetValue",
+          next_scan."portNumber",
+          next_scan."portProtocol",
           next_scan.engine,
           next_scan."batchType",
           next_scan."configSnapshot"`,
@@ -494,6 +576,8 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
           a.value as "assetValue",
           a.type as "assetType",
           s.type,
+          s."portNumber" as "portNumber",
+          s."portProtocol" as "portProtocol",
           s.status,
           s."resultData",
           s."createdAt",
@@ -542,28 +626,7 @@ export async function cancelScanBatch(orgId: string, batchId: string) {
         assetId
       );
     } else {
-      let restoredStatus: "idle" | "completed" | "failed" | "expired" = "idle";
-      let restoredLastScanDate: Date | null = null;
-
-      if (previousTerminal) {
-        if (previousTerminal.status === "failed") {
-          restoredStatus = "failed";
-        } else {
-          const parsed = parseOpenSSLScanResult(previousTerminal.resultData);
-          restoredStatus = parsed.summary?.dnsMissing ? "expired" : "completed";
-        }
-
-        restoredLastScanDate = previousTerminal.completedAt || previousTerminal.createdAt;
-      }
-
-      await prisma.$executeRawUnsafe(
-        `UPDATE "asset"
-         SET "scanStatus" = $1, "lastScanDate" = $2
-         WHERE id = $3`,
-        restoredStatus,
-        restoredLastScanDate,
-        assetId
-      );
+      await refreshOpenSSLAssetState(assetId, orgId);
     }
   }
 
@@ -611,6 +674,8 @@ export async function getOrgScanActivity(orgId: string, canScan: boolean): Promi
             a.value as "assetValue",
             a.type as "assetType",
             s.type,
+            s."portNumber" as "portNumber",
+            s."portProtocol" as "portProtocol",
             s.status,
             s."resultData",
             s."createdAt",

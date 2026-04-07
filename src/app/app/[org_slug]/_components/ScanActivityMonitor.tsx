@@ -106,6 +106,20 @@ function itemTone(item: ScanActivityItem) {
   return "bg-slate-100 text-slate-700";
 }
 
+function activityItemLabel(item: Pick<ScanActivityItem, "assetValue" | "portNumber" | "portProtocol">) {
+  if (!item.portNumber) return item.assetValue;
+  return `${item.assetValue}:${item.portNumber}/${(item.portProtocol || "tcp").toUpperCase()}`;
+}
+
+function activityItemAssetLabel(item: Pick<ScanActivityItem, "assetValue">) {
+  return item.assetValue;
+}
+
+function activityItemPortLabel(item: Pick<ScanActivityItem, "portNumber" | "portProtocol">) {
+  if (!item.portNumber) return null;
+  return `${item.portNumber}/${(item.portProtocol || "tcp").toUpperCase()}`;
+}
+
 function streamChipTone(streamStatus: "idle" | "connecting" | "connected" | "error") {
   if (streamStatus === "connected") {
     return {
@@ -134,7 +148,7 @@ function streamChipTone(streamStatus: "idle" | "connecting" | "connected" | "err
   return {
     chip: "border-stone-200 bg-stone-50 text-stone-600",
     dot: "bg-stone-400",
-    label: "Paused",
+    label: "Idle",
   };
 }
 
@@ -174,6 +188,11 @@ function historyCategoryMeta(category: ScanHistoryCategory) {
   };
 }
 
+type LiveBatchCardItem = ScanActivityItem & {
+  lingerCompleted?: boolean;
+  exiting?: boolean;
+};
+
 function BatchSection({ batch }: { batch: ScanActivityBatch }) {
   const [activeTab, setActiveTab] = useState<"running" | "queued" | "completed">(
     batch.items.some((item) => item.status === "running")
@@ -182,9 +201,15 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
         ? "queued"
         : "completed"
   );
-        const [elapsedSeconds, setElapsedSeconds] = useState(0);
-        const [renderRunningCards, setRenderRunningCards] = useState(activeTab === "running");
-        const [runningCardsVisible, setRunningCardsVisible] = useState(activeTab === "running");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [renderRunningCards, setRenderRunningCards] = useState(activeTab === "running");
+  const [runningCardsVisible, setRunningCardsVisible] = useState(activeTab === "running");
+  const [liveCardItems, setLiveCardItems] = useState<LiveBatchCardItem[]>(
+    batch.items.filter((item) => item.status === "running")
+  );
+  const completedDismissalsRef = useRef<Set<string>>(new Set());
+  const liveCardRemovalTimeoutsRef = useRef<Record<string, number>>({});
+  const liveCardExitTimeoutsRef = useRef<Record<string, number>>({});
 
   const runningItems = batch.items.filter((item) => item.status === "running");
   const queuedItems = batch.items.filter((item) => item.status === "pending");
@@ -206,20 +231,11 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
     label: string;
     count: number;
   }> = [
-    { id: "running", label: "Currently Scanning", count: runningItems.length },
+    { id: "running", label: "Currently Scanning", count: liveCardItems.length },
     { id: "queued", label: "Queued", count: queuedItems.length },
     { id: "completed", label: "Completed", count: completedItems.length },
   ];
-  const runningDisplayItems = batch.items.filter((item) => {
-    if (item.status === "running") return true;
-    if (item.status !== "completed" || !item.completedAt) return false;
-
-    const completedAtMs = new Date(item.completedAt).getTime();
-    if (Number.isNaN(completedAtMs)) return false;
-
-    return Date.now() - completedAtMs < 7000;
-  });
-  const activeItemsForView = activeTab === "running" ? runningDisplayItems : tabItems;
+  const activeItemsForView = activeTab === "running" ? liveCardItems : tabItems;
 
   useEffect(() => {
     const mountedAt = Date.now();
@@ -232,6 +248,93 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
   }, []);
 
   useEffect(() => {
+    completedDismissalsRef.current.clear();
+    Object.values(liveCardRemovalTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
+    Object.values(liveCardExitTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
+    liveCardRemovalTimeoutsRef.current = {};
+    liveCardExitTimeoutsRef.current = {};
+    setLiveCardItems(batch.items.filter((item) => item.status === "running"));
+  }, [batch.id]);
+
+  useEffect(() => {
+    const scheduleLiveCardRemoval = (itemId: string) => {
+      if (liveCardRemovalTimeoutsRef.current[itemId]) return;
+
+      liveCardExitTimeoutsRef.current[itemId] = window.setTimeout(() => {
+        setLiveCardItems((prev) =>
+          prev.map((item) => (item.id === itemId ? { ...item, exiting: true } : item))
+        );
+        delete liveCardExitTimeoutsRef.current[itemId];
+      }, 800);
+
+      liveCardRemovalTimeoutsRef.current[itemId] = window.setTimeout(() => {
+        completedDismissalsRef.current.add(itemId);
+        setLiveCardItems((prev) => prev.filter((item) => item.id !== itemId));
+        delete liveCardRemovalTimeoutsRef.current[itemId];
+      }, 1000);
+    };
+
+    const clearLiveCardRemoval = (itemId: string) => {
+      const exitTimeoutId = liveCardExitTimeoutsRef.current[itemId];
+      if (exitTimeoutId) {
+        window.clearTimeout(exitTimeoutId);
+        delete liveCardExitTimeoutsRef.current[itemId];
+      }
+      const timeoutId = liveCardRemovalTimeoutsRef.current[itemId];
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+        delete liveCardRemovalTimeoutsRef.current[itemId];
+      }
+    };
+
+    setLiveCardItems((prev) => {
+      const next: LiveBatchCardItem[] = [];
+      const nextIds = new Set<string>();
+      const currentItemsById = new Map(batch.items.map((item) => [item.id, item]));
+
+      for (const prevItem of prev) {
+        const currentItem = currentItemsById.get(prevItem.id);
+
+        if (currentItem?.status === "running") {
+          clearLiveCardRemoval(prevItem.id);
+          next.push({ ...currentItem, lingerCompleted: false, exiting: false });
+          nextIds.add(prevItem.id);
+          continue;
+        }
+
+        if (currentItem?.status === "completed") {
+          scheduleLiveCardRemoval(prevItem.id);
+          next.push({ ...currentItem, lingerCompleted: true, exiting: prevItem.exiting ?? false });
+          nextIds.add(prevItem.id);
+          continue;
+        }
+
+        if (prevItem.lingerCompleted) {
+          next.push(prevItem);
+          nextIds.add(prevItem.id);
+        }
+      }
+
+      for (const item of batch.items) {
+        if (nextIds.has(item.id) || completedDismissalsRef.current.has(item.id)) continue;
+
+        if (item.status === "running") {
+          clearLiveCardRemoval(item.id);
+          next.push({ ...item, lingerCompleted: false, exiting: false });
+          continue;
+        }
+
+        if (item.status === "completed") {
+          scheduleLiveCardRemoval(item.id);
+          next.push({ ...item, lingerCompleted: true, exiting: false });
+        }
+      }
+
+      return next;
+    });
+  }, [batch.items]);
+
+  useEffect(() => {
     if (activeTab === "running") {
       setRenderRunningCards(true);
       const frame = window.requestAnimationFrame(() => setRunningCardsVisible(true));
@@ -242,6 +345,15 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
     const timeoutId = window.setTimeout(() => setRenderRunningCards(false), 240);
     return () => window.clearTimeout(timeoutId);
   }, [activeTab]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(liveCardRemovalTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
+      Object.values(liveCardExitTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
+      liveCardRemovalTimeoutsRef.current = {};
+      liveCardExitTimeoutsRef.current = {};
+    };
+  }, []);
 
   return (
     <section className="scan-batch-section rounded-[1.6rem] border border-amber-500/15 bg-[#fffdf9] p-5 shadow-sm">
@@ -332,17 +444,29 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
               const when = formatWhenStacked(item.completedAt || item.createdAt);
               const itemSeed = item.id.split("").reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % 14;
               const liveProgress = item.status === "completed" ? 100 : Math.min(96, 18 + itemSeed + elapsedSeconds * 1.6);
+              const itemPortLabel = activityItemPortLabel(item);
               return (
                 <div
                   key={item.id}
                   className={`scan-running-card scan-running-card-enter rounded-2xl border border-amber-500/15 p-4 ${
                     item.status === "completed" ? "scan-running-card-completed" : ""
+                  } ${
+                    "exiting" in item && item.exiting ? "scan-running-card-exit" : ""
                   }`}
                   style={{ animationDelay: `${Math.min(index * 70, 280)}ms` }}
                 >
                   <div className="scan-running-card-content">
                     <div className="flex items-start justify-between gap-3">
-                      <p className="text-base font-black leading-snug text-[#3d200a]">{item.assetValue}</p>
+                      <div className="min-w-0">
+                        <p className="truncate text-base font-black leading-snug text-[#3d200a]">
+                          {activityItemAssetLabel(item)}
+                        </p>
+                        {itemPortLabel && (
+                          <span className="mt-2 inline-flex items-center rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-blue-700">
+                            {itemPortLabel}
+                          </span>
+                        )}
+                      </div>
                       <span className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${itemTone(item)}`}>
                         {item.status === "completed" ? "Completed" : "Running"}
                       </span>
@@ -364,7 +488,7 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
             <table className="w-full border-collapse">
               <thead>
                 <tr className="bg-[#fff3df] text-left">
-                  <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#8a5d33]">Asset</th>
+                  <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#8a5d33]">Target</th>
                   <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#8a5d33]">Status</th>
                   <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#8a5d33]">Updated</th>
                 </tr>
@@ -383,7 +507,7 @@ function BatchSection({ batch }: { batch: ScanActivityBatch }) {
                         }`}
                       >
                         <td className="px-4 py-3 align-top">
-                          <p className="text-xl font-black leading-snug text-[#3d200a]">{item.assetValue}</p>
+                          <p className="text-xl font-black leading-snug text-[#3d200a]">{activityItemLabel(item)}</p>
                         </td>
                         <td className="px-4 py-3 align-top">
                           <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">
@@ -481,7 +605,7 @@ function HistoryBatchSection({ entry }: { entry: ScanHistoryEntry }) {
           <table className="w-full border-collapse">
             <thead>
               <tr className="bg-slate-50 text-left">
-                <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#6b0000]">Asset</th>
+                <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#6b0000]">Target</th>
                 <th className="px-4 py-3 text-xs font-extrabold uppercase tracking-wide text-[#6b0000]">Updated</th>
               </tr>
             </thead>
@@ -499,7 +623,7 @@ function HistoryBatchSection({ entry }: { entry: ScanHistoryEntry }) {
                       }`}
                     >
                       <td className="px-4 py-3 align-top">
-                        <p className="text-xl font-black leading-snug text-[#3d200a]">{item.assetValue}</p>
+                        <p className="text-xl font-black leading-snug text-[#3d200a]">{activityItemLabel(item)}</p>
                         {item.category === "dnsExpired" && (
                           <p className="mt-1 text-xs font-semibold text-rose-700">
                             This domain no longer resolves in DNS.
@@ -586,9 +710,24 @@ export default function ScanActivityMonitor({
       : "idle";
   const canStart = miniStreamStatus !== "connecting" && miniStreamStatus !== "connected";
   const canStop = canScan && Boolean(activeBatch);
-  const streamChip = streamChipTone(streamStatus);
+  const modalStreamStatus: "idle" | "connecting" | "connected" | "error" =
+    checkingConnection || isStarting
+      ? "connecting"
+      : hasRunningSharedScan
+        ? streamStatus === "connected"
+          ? "connected"
+          : streamStatus === "error"
+            ? "error"
+            : "connecting"
+        : streamStatus;
+  const streamChip = streamChipTone(modalStreamStatus);
   const miniStreamChip = streamChipTone(miniStreamStatus);
   const showMiniProgress = miniStreamStatus === "connected" && Boolean(featuredBatch);
+  const syncInFlight =
+    isStarting ||
+    checkingConnection ||
+    miniStreamStatus === "connecting" ||
+    modalStreamStatus === "connecting";
   const cardStateLabel = activity?.lock.active
     ? "In progress"
     : featuredBatch?.status === "queued"
@@ -618,6 +757,7 @@ export default function ScanActivityMonitor({
   const headerActionsHideExit = 26;
   const headerCompactEnter = 104;
   const headerCompactExit = 52;
+  const effectiveHeaderCompact = isHeaderCompact || hideHeaderActions;
   const serviceWarningEngine = activity?.lock.engine || activeBatch?.engine || latestBatch?.engine || null;
   const outageSignalActive = Boolean(
     error && /endpoint appears unavailable|service unavailable|may stall|nmap api/i.test(error)
@@ -877,12 +1017,12 @@ export default function ScanActivityMonitor({
             <button
               type="button"
               onClick={handleStart}
-              disabled={!canStart || isStarting || checkingConnection}
+              disabled={!canStart || syncInFlight}
               className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-white/15 text-white transition hover:bg-white/25 disabled:cursor-not-allowed disabled:opacity-55"
-              aria-label={miniStreamStatus === "connecting" || checkingConnection ? "Connecting activity monitor" : "Start activity monitor"}
-              title={miniStreamStatus === "connecting" || checkingConnection ? "Connecting activity monitor" : "Start activity monitor"}
+              aria-label={syncInFlight ? "Connecting activity monitor" : "Sync activity monitor"}
+              title={syncInFlight ? "Connecting activity monitor" : "Sync activity monitor"}
             >
-              {isStarting || miniStreamStatus === "connecting" || checkingConnection ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {syncInFlight ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             </button>
           </div>
         </div>
@@ -902,16 +1042,16 @@ export default function ScanActivityMonitor({
           >
             <div
               className={`scan-modal-header flex justify-between gap-5 border-b border-white/20 px-6 transition-all duration-300 sm:px-7 ${
-                isHeaderCompact ? "items-center py-2" : "items-start py-5"
+                effectiveHeaderCompact ? "items-center py-2" : "items-start py-5"
               }`}
             >
               <div
                 className={`transition-all duration-300 ${
-                  isHeaderCompact ? "flex min-h-10 items-center" : ""
+                  effectiveHeaderCompact ? "flex min-h-10 items-center" : ""
                 }`}
               >
                 <div className="flex items-center gap-2.5">
-                  <h2 className={`leading-none whitespace-nowrap font-extrabold tracking-tight text-white transition-all duration-300 ${isHeaderCompact ? "text-[1.7rem]" : "text-[2.25rem]"}`}>
+                  <h2 className={`leading-none whitespace-nowrap font-extrabold tracking-tight text-white transition-all duration-300 ${effectiveHeaderCompact ? "text-[1.7rem]" : "text-[2.25rem]"}`}>
                     Activity Monitor
                   </h2>
                   <div className="relative">
@@ -935,7 +1075,7 @@ export default function ScanActivityMonitor({
                       </div>
                     )}
                   </div>
-                  {isHeaderCompact && (
+                  {effectiveHeaderCompact && (
                     <div className="scan-compact-actions-enter ml-1 flex items-center gap-1.5">
                       <span
                         className="qw-tip inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/30 bg-white/10"
@@ -948,11 +1088,12 @@ export default function ScanActivityMonitor({
                         <button
                           type="button"
                           onClick={handleStart}
+                          disabled={syncInFlight}
                           className="qw-tip inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/30 bg-white/12 text-white transition hover:bg-white/20"
                           data-tip="Sync now"
                           aria-label="Sync now"
                         >
-                          {isStarting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                          {syncInFlight ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                         </button>
                       )}
                       {canStop && activeBatch && (
@@ -986,7 +1127,7 @@ export default function ScanActivityMonitor({
                 </div>
                 <div
                   className={`mt-4 flex flex-wrap items-center gap-2.5 transition-all duration-300 ${
-                    hideHeaderActions
+                    effectiveHeaderCompact
                       ? "invisible max-h-0 overflow-hidden opacity-0 pointer-events-none mt-0"
                       : "visible max-h-24 opacity-100"
                   }`}
@@ -999,10 +1140,11 @@ export default function ScanActivityMonitor({
                     <button
                       type="button"
                       onClick={handleStart}
+                      disabled={syncInFlight}
                       className="qw-tip inline-flex items-center gap-2 whitespace-nowrap rounded-full border border-white/35 bg-white/14 px-4 py-2 text-base/none font-semibold text-white transition hover:bg-white/24 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
                       data-tip="Sync current scan activity"
                     >
-                      {isStarting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                      {syncInFlight ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
                       Sync now
                     </button>
                   )}
@@ -1043,10 +1185,10 @@ export default function ScanActivityMonitor({
               <button
                 type="button"
                 onClick={closeMonitor}
-                className="qw-tip inline-flex h-5 w-5 items-center justify-center rounded-full border border-white/24 bg-white/12 text-white/95 backdrop-blur-md transition-all hover:bg-white/18 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
+                className="qw-tip inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/30 bg-white/12 text-white/95 backdrop-blur-md transition-all hover:bg-white/18 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
                 data-tip="Close"
               >
-                <X className="h-3 w-3" />
+                <X className="h-4 w-4" />
               </button>
             </div>
 
@@ -1079,7 +1221,7 @@ export default function ScanActivityMonitor({
                 </div>
               ) : (
                 <div className="space-y-6">
-                  {streamStatus !== "connected" && streamStatus !== "connecting" && (
+                  {modalStreamStatus !== "connected" && modalStreamStatus !== "connecting" && (
                     <div className="rounded-[1.35rem] border border-slate-200/85 bg-white/45 p-5 backdrop-blur-md">
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
                         <div>
@@ -1112,14 +1254,14 @@ export default function ScanActivityMonitor({
                             </div>
                           </div>
                           <p className="mt-1.5 text-[1.15rem] leading-snug font-bold text-[#3d200a]">
-                            {streamStatus === "error"
+                            {modalStreamStatus === "error"
                               ? "Connection interrupted. Reconnecting automatically..."
                               : !hasActiveSharedScan
                                 ? "No active scan detected."
                               : "Live updates are paused until you press Start."}
                           </p>
                           <p className="mt-1.5 text-[1.02rem] leading-relaxed font-medium text-[#8a5d33]/80">
-                            {streamStatus === "error"
+                            {modalStreamStatus === "error"
                               ? "If a scan is still running, this monitor will reconnect and resume live updates. If it completed, this panel will switch back to idle."
                               : !hasActiveSharedScan
                                 ? "Press Sync now to refresh activity."
@@ -1133,11 +1275,11 @@ export default function ScanActivityMonitor({
                         <button
                           type="button"
                           onClick={handleStart}
-                          disabled={!canStart}
+                          disabled={!canStart || syncInFlight}
                           className="qw-tip inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full bg-[#8B0000] px-6 py-3 text-base/none font-semibold text-white transition hover:bg-[#6d0000] disabled:cursor-not-allowed disabled:bg-[#8B0000]/50"
                           data-tip="Sync current scan activity"
                         >
-                          {isStarting ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                          {syncInFlight ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                           Sync now
                         </button>
                       </div>
@@ -1410,6 +1552,10 @@ export default function ScanActivityMonitor({
           background-size: 220% 100%;
           animation: scan-card-bg-shimmer 5.4s linear infinite;
           box-shadow: inset 0 0 0 1px rgba(245, 178, 62, 0.08);
+          transition:
+            background 220ms ease,
+            box-shadow 220ms ease,
+            border-color 220ms ease;
         }
 
         .scan-running-card::before {
@@ -1458,6 +1604,16 @@ export default function ScanActivityMonitor({
           filter: blur(3px);
           transform: translateY(6px) scale(0.988);
           animation: scan-running-card-enter 520ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        .scan-running-card-exit {
+          opacity: 0;
+          filter: blur(2px);
+          transform: translateY(-2px) scale(0.992);
+          transition:
+            opacity 180ms ease,
+            filter 180ms ease,
+            transform 180ms ease;
         }
 
         .scan-history-accordion.is-open .scan-history-summary {

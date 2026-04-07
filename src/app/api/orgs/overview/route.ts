@@ -3,6 +3,51 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
 import { parseOpenSSLScanResult } from "@/lib/openssl-scan";
+import { hasKyberGroup } from "@/lib/pqc";
+
+type OverviewScanRow = {
+  assetId: string;
+  assetName: string;
+  completedAt: string | null;
+  createdAt: string;
+  resultData: string | null;
+  portNumber: number | null;
+  portProtocol: string | null;
+};
+
+type RiskEntry = {
+  id: string;
+  name: string;
+  issue: string;
+  sortVal: number;
+};
+
+const TLS_VERSION_RANK: Record<string, number> = {
+  "TLSv1.3": 4,
+  "TLSv1.2": 3,
+  "TLSv1.1": 2,
+  "TLSv1.0": 1,
+};
+
+function incrementCounter(counter: Record<string, number>, key: string | null | undefined) {
+  if (!key) return;
+  counter[key] = (counter[key] || 0) + 1;
+}
+
+function uniqueStrings(values: Array<string | null | undefined> | null | undefined): string[] {
+  return Array.from(new Set((values || []).filter((value): value is string => typeof value === "string" && value.trim().length > 0)));
+}
+
+function buildChartData(counter: Record<string, number>, limit = 12) {
+  return Object.entries(counter)
+    .map(([name, value]) => ({ name, value }))
+    .sort((left, right) => right.value - left.value || left.name.localeCompare(right.name))
+    .slice(0, limit);
+}
+
+function getPortLabel(portNumber: number | null, portProtocol: string | null) {
+  return `${portNumber || 443}/${(portProtocol || "tcp").toUpperCase()}`;
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -13,16 +58,17 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
     const orgId = searchParams.get("orgId");
-    const daysStr = searchParams.get("days") || "30";
-    const days = isNaN(parseInt(daysStr, 10)) ? 30 : parseInt(daysStr, 10);
 
     if (!orgId) {
       return NextResponse.json({ error: "Missing orgId" }, { status: 400 });
     }
 
-    // Role check
     const memberRows = await prisma.$queryRawUnsafe<{ id: string }[]>(
-      `SELECT id FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
+      `SELECT id
+         FROM "member"
+        WHERE "organizationId" = $1
+          AND "userId" = $2
+        LIMIT 1`,
       orgId,
       session.user.id
     );
@@ -31,161 +77,302 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // 1. Fetch Discovery Assets 
-    const assetTypesRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT type, "isRoot" FROM "asset" WHERE "organizationId" = $1`, orgId
-    );
-    let totalAssets = assetTypesRows.length;
-    let domains = 0; let subdomains = 0; let ips = 0; let cloud = 0;
-    for (const a of assetTypesRows) {
-       if (a.type === 'domain') {
-          if (a.isRoot) domains++; else subdomains++;
-       } else if (a.type === 'ip') ips++;
-    }
-
-    // 2. Fetch Latest Scans (within the defined time window)
-    const scanRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT s."assetId", s."resultData", s."completedAt", a.value as "assetName" 
-       FROM "asset_scan" s
-       JOIN "asset" a ON a.id = s."assetId"
-       WHERE a."organizationId" = $1 
-         AND s.type = 'openssl' 
-         AND s.status = 'completed'
-         AND s."completedAt" >= NOW() - INTERVAL '${days} days'
-       ORDER BY s."completedAt" DESC`,
-       orgId
+    const assetTypesRows = await prisma.$queryRawUnsafe<Array<{ type: string; isRoot: boolean }>>(
+      `SELECT type, "isRoot"
+         FROM "asset"
+        WHERE "organizationId" = $1`,
+      orgId
     );
 
-    const latestScansMap = new Map();
-    for (const row of scanRows) {
-      if (!latestScansMap.has(row.assetId)) {
-         const parsed = parseOpenSSLScanResult(row.resultData);
-         if (parsed.summary) {
-           latestScansMap.set(row.assetId, { ...row, parsed });
-         }
+    const totalAssets = assetTypesRows.length;
+    let domains = 0;
+    let subdomains = 0;
+    let ips = 0;
+    let cloud = 0;
+
+    for (const asset of assetTypesRows) {
+      if (asset.type === "domain") {
+        if (asset.isRoot) domains += 1;
+        else subdomains += 1;
+      } else if (asset.type === "ip") {
+        ips += 1;
       }
     }
-    const latestScans = Array.from(latestScansMap.values());
 
-    // 3. Aggregate
-    let totalScanned = latestScans.length;
-    let expiredCerts = 0;
-    let closeDeadlineCerts = 0;
-    let validCerts = 0;
-    
-    let tlsVersions: Record<string, number> = {};
-    let algorithms: Record<string, number> = {};
-    let keySizes: Record<string, number> = {};
+    const latestEndpointScans = await prisma.$queryRawUnsafe<OverviewScanRow[]>(
+      `SELECT DISTINCT ON (
+          s."assetId",
+          COALESCE(s."portNumber", 443),
+          LOWER(COALESCE(s."portProtocol", 'tcp'))
+       )
+          s."assetId" as "assetId",
+          a.value as "assetName",
+          s."completedAt" as "completedAt",
+          s."createdAt" as "createdAt",
+          s."resultData" as "resultData",
+          s."portNumber" as "portNumber",
+          s."portProtocol" as "portProtocol"
+       FROM "asset_scan" s
+       INNER JOIN "asset" a ON a.id = s."assetId"
+       WHERE a."organizationId" = $1
+         AND s.type = 'openssl'
+         AND s.status IN ('completed', 'failed')
+       ORDER BY
+         s."assetId",
+         COALESCE(s."portNumber", 443),
+         LOWER(COALESCE(s."portProtocol", 'tcp')),
+         s."completedAt" DESC NULLS LAST,
+         s."createdAt" DESC`,
+      orgId
+    );
+
+    const tlsVersions: Record<string, number> = {};
+    const tls13CipherNegotiated: Record<string, number> = {};
+    const tls13CipherAccepted: Record<string, number> = {};
+    const tls12CipherNegotiated: Record<string, number> = {};
+    const tls12CipherAccepted: Record<string, number> = {};
+    const certificateSignatureAlgorithms: Record<string, number> = {};
+    const certificateKeySizes: Record<string, number> = {};
+    const tls13KeyExchange: Record<string, number> = {};
+
     let strongCipherCount = 0;
     let weakCipherCount = 0;
     let selfSignedCount = 0;
     let tlsDowngradeVulnerable = 0;
+    let expiredCerts = 0;
+    let closeDeadlineCerts = 0;
+    let validCerts = 0;
+    let reachableTlsEndpointCount = 0;
 
-    let topRiskAssets: any[] = [];
+    let kyberSupportedYes = 0;
+    let kyberSupportedNo = 0;
+    let kyberNegotiatedYes = 0;
+    let kyberNegotiatedNo = 0;
 
-    for (const scan of latestScans) {
-       const p = scan.parsed;
-       if (!p?.summary) continue;
+    const riskByAsset = new Map<string, RiskEntry>();
 
-       const summary = p.summary;
+    for (const row of latestEndpointScans) {
+      const parsed = parseOpenSSLScanResult(row.resultData);
+      const summary = parsed.summary;
+      const portLabel = getPortLabel(row.portNumber, row.portProtocol);
 
-       // Validity Processing
-       const daysRem = summary.daysRemaining;
-       const isValid = summary.certificateValid;
-       const isDnsMissing = summary.dnsMissing;
-       
-       let isRisk = false;
-       let issue = "";
-       let sortVal = 9999;
+      if (!summary) {
+        if (parsed.error) {
+          const timeoutIssue = /timed out/i.test(parsed.error);
+          const riskEntry: RiskEntry = {
+            id: row.assetId,
+            name: row.assetName,
+            issue: timeoutIssue ? `Scan Timeout • ${portLabel}` : `Scan Failed • ${portLabel}`,
+            sortVal: timeoutIssue ? 2 : 3,
+          };
+          const existing = riskByAsset.get(row.assetId);
+          if (!existing || riskEntry.sortVal < existing.sortVal) {
+            riskByAsset.set(row.assetId, riskEntry);
+          }
+        }
+        continue;
+      }
 
-       if (isDnsMissing) {
-         isRisk = true;
-         issue = "DNS Expired";
-         sortVal = -2;
-       } else if (isValid === false) {
-         expiredCerts++;
-         isRisk = true;
-         issue = "Invalid Certificate";
-         sortVal = -1;
-       } else if (daysRem !== undefined) {
-         if (daysRem <= 0) { 
-           expiredCerts++; 
-           isRisk = true; 
-           issue = "Certificate Expired"; 
-           sortVal = 0; 
-         }
-         else if (daysRem <= 30) { 
-           closeDeadlineCerts++; 
-           isRisk = true; 
-           issue = `Expires in ${daysRem} days`; 
-           sortVal = daysRem; 
-         }
-         else {
-           validCerts++;
-         }
-       }
-       
-       if (isRisk) {
-         topRiskAssets.push({
-           id: scan.assetId,
-           name: scan.assetName,
-           issue,
-           sortVal
-         });
-       }
+      let riskEntry: RiskEntry | null = null;
 
-       // TLS
-       const tls = summary.primaryTlsVersion;
-       if (tls) tlsVersions[tls] = (tlsVersions[tls] || 0) + 1;
+      if (summary.dnsMissing) {
+        riskEntry = {
+          id: row.assetId,
+          name: row.assetName,
+          issue: `DNS Expired • ${portLabel}`,
+          sortVal: -2,
+        };
+      } else if (summary.noTlsDetected) {
+        riskEntry = {
+          id: row.assetId,
+          name: row.assetName,
+          issue: `No TLS on ${portLabel}`,
+          sortVal: -1.5,
+        };
+      } else if (summary.certificateValid === false) {
+        expiredCerts += 1;
+        riskEntry = {
+          id: row.assetId,
+          name: row.assetName,
+          issue: `Invalid Certificate • ${portLabel}`,
+          sortVal: -1,
+        };
+      } else if (typeof summary.daysRemaining === "number") {
+        if (summary.daysRemaining <= 0) {
+          expiredCerts += 1;
+          riskEntry = {
+            id: row.assetId,
+            name: row.assetName,
+            issue: `Certificate Expired • ${portLabel}`,
+            sortVal: 0,
+          };
+        } else if (summary.daysRemaining <= 30) {
+          closeDeadlineCerts += 1;
+          riskEntry = {
+            id: row.assetId,
+            name: row.assetName,
+            issue: `Expires in ${summary.daysRemaining} days • ${portLabel}`,
+            sortVal: summary.daysRemaining,
+          };
+        } else if (summary.certificateValid === true) {
+          validCerts += 1;
+        }
+      } else if (summary.certificateValid === true) {
+        validCerts += 1;
+      }
 
-       // Algorithms
-       const cname = summary.preferredCipher;
-       if (cname) algorithms[cname] = (algorithms[cname] || 0) + 1;
+      if (riskEntry) {
+        const existing = riskByAsset.get(row.assetId);
+        if (!existing || riskEntry.sortVal < existing.sortVal) {
+          riskByAsset.set(row.assetId, riskEntry);
+        }
+      }
 
-       // Key sizes
-       const ks = summary.publicKeyBits;
-       const kalg = summary.publicKeyAlgorithm || "Unknown";
-       if (ks) {
-          const keyName = `${kalg} ${ks}-bit`;
-          keySizes[keyName] = (keySizes[keyName] || 0) + 1;
-       }
+      if (summary.scanState !== "reachable") {
+        continue;
+      }
 
-       // Security analysis
-       if (summary.strongCipher === true) strongCipherCount++;
-       if (summary.strongCipher === false) weakCipherCount++;
-       if (summary.selfSignedCert === true) selfSignedCount++;
-       if (summary.tlsVersionSecure === false) tlsDowngradeVulnerable++;
+      reachableTlsEndpointCount += 1;
+
+      incrementCounter(tlsVersions, summary.primaryTlsVersion);
+      incrementCounter(certificateSignatureAlgorithms, summary.signatureAlgorithm);
+
+      if (summary.publicKeyAlgorithm && summary.publicKeyBits) {
+        incrementCounter(
+          certificateKeySizes,
+          `${summary.publicKeyAlgorithm} ${summary.publicKeyBits}-bit`
+        );
+      }
+
+      if (summary.strongCipher === true) strongCipherCount += 1;
+      if (summary.strongCipher === false) weakCipherCount += 1;
+      if (summary.selfSignedCert === true) selfSignedCount += 1;
+      if (summary.tlsVersionSecure === false) tlsDowngradeVulnerable += 1;
+
+      if (hasKyberGroup(summary.supportedGroups)) kyberSupportedYes += 1;
+      else kyberSupportedNo += 1;
+
+      if (hasKyberGroup([summary.negotiatedGroup])) kyberNegotiatedYes += 1;
+      else kyberNegotiatedNo += 1;
+
+      if (!parsed.raw) continue;
+
+      const supportedTls13 = (parsed.raw.tls_versions || []).some((probe) => {
+        const version = probe.negotiated_protocol || probe.tls_version;
+        return probe.supported && version === "TLSv1.3";
+      });
+
+      for (const probe of parsed.raw.tls_versions || []) {
+        if (!probe.supported) continue;
+        const version = probe.negotiated_protocol || probe.tls_version;
+
+        if (version === "TLSv1.3") {
+          incrementCounter(tls13CipherNegotiated, probe.negotiated_cipher || null);
+          for (const cipher of uniqueStrings(probe.accepted_ciphers_in_client_offer_order)) {
+            incrementCounter(tls13CipherAccepted, cipher);
+          }
+        }
+
+        if (version === "TLSv1.2") {
+          incrementCounter(tls12CipherNegotiated, probe.negotiated_cipher || null);
+          for (const cipher of uniqueStrings(probe.accepted_ciphers_in_client_offer_order)) {
+            incrementCounter(tls12CipherAccepted, cipher);
+          }
+        }
+      }
+
+      if (supportedTls13) {
+        const groups = uniqueStrings(parsed.raw.supported_groups);
+        const groupsToCount = groups.length > 0 ? groups : uniqueStrings([summary.negotiatedGroup]);
+        for (const group of groupsToCount) {
+          incrementCounter(tls13KeyExchange, group);
+        }
+      }
     }
 
-    const tlsChartData = Object.entries(tlsVersions).map(([name, value]) => ({ name, value }));
-    const algoChartData = Object.entries(algorithms).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 10);
-    const keySizeChartData = Object.entries(keySizes).map(([name, value]) => ({ name, value })).sort((a,b) => b.value - a.value).slice(0, 10);
+    const totalScanned = latestEndpointScans.length;
+    const failureRate =
+      totalScanned > 0
+        ? (expiredCerts + weakCipherCount + selfSignedCount + tlsDowngradeVulnerable) / (totalScanned * 4)
+        : 0;
 
-    // Dynamic Tier Logic
-    let tier = { grade: "A", tier: "Tier 1", label: "Excellent", color: "text-emerald-500", bg: "bg-emerald-500/10 border-emerald-500/20" };
-    const failureRate = totalScanned > 0 ? (expiredCerts + weakCipherCount + selfSignedCount) / (totalScanned * 3) : 0;
-    if (failureRate > 0) tier = { grade: "B", tier: "Tier 2", label: "Good", color: "text-blue-500", bg: "bg-blue-500/10 border-blue-500/20" };
-    if (failureRate > 0.1) tier = { grade: "C", tier: "Tier 3", label: "Satisfactory", color: "text-amber-500", bg: "bg-amber-500/10 border-amber-500/20" };
-    if (failureRate > 0.3) tier = { grade: "D", tier: "Tier 4", label: "Needs Improvement", color: "text-red-500", bg: "bg-red-500/10 border-red-500/20" };
+    let tier = {
+      grade: "A",
+      tier: "Tier 1",
+      label: "Excellent",
+      color: "text-emerald-500",
+      bg: "bg-emerald-500/10 border-emerald-500/20",
+    };
 
-    topRiskAssets = topRiskAssets.sort((a,b) => a.sortVal - b.sortVal).slice(0, 3);
+    if (failureRate > 0) {
+      tier = {
+        grade: "B",
+        tier: "Tier 2",
+        label: "Good",
+        color: "text-blue-500",
+        bg: "bg-blue-500/10 border-blue-500/20",
+      };
+    }
+    if (failureRate > 0.1) {
+      tier = {
+        grade: "C",
+        tier: "Tier 3",
+        label: "Satisfactory",
+        color: "text-amber-500",
+        bg: "bg-amber-500/10 border-amber-500/20",
+      };
+    }
+    if (failureRate > 0.3) {
+      tier = {
+        grade: "D",
+        tier: "Tier 4",
+        label: "Needs Improvement",
+        color: "text-red-500",
+        bg: "bg-red-500/10 border-red-500/20",
+      };
+    }
+
+    const tlsChartData = Object.entries(tlsVersions)
+      .map(([name, value]) => ({ name, value }))
+      .sort((left, right) => {
+        const rankDelta = (TLS_VERSION_RANK[right.name] || 0) - (TLS_VERSION_RANK[left.name] || 0);
+        return rankDelta !== 0 ? rankDelta : right.value - left.value;
+      });
+
+    const topRiskAssets = Array.from(riskByAsset.values())
+      .sort((left, right) => left.sortVal - right.sortVal)
+      .slice(0, 3);
 
     return NextResponse.json({
-       totalAssets,
-       discovery: { domains, subdomains, ips, cloud },
-       totalScanned,
-       expiredCerts,
-       closeDeadlineCerts,
-       validCerts,
-       tlsChartData,
-       algoChartData,
-       keySizeChartData,
-       strongCipherCount,
-       weakCipherCount,
-       selfSignedCount,
-       tlsDowngradeVulnerable,
-       tier,
-       topRiskAssets
+      totalAssets,
+      discovery: { domains, subdomains, ips, cloud },
+      totalScanned,
+      reachableTlsEndpointCount,
+      expiredCerts,
+      closeDeadlineCerts,
+      validCerts,
+      tlsChartData,
+      tls13CipherNegotiated: buildChartData(tls13CipherNegotiated),
+      tls13CipherAccepted: buildChartData(tls13CipherAccepted),
+      tls12CipherNegotiated: buildChartData(tls12CipherNegotiated),
+      tls12CipherAccepted: buildChartData(tls12CipherAccepted),
+      kyberSupportedYesNo: [
+        { name: "Yes", value: kyberSupportedYes },
+        { name: "No", value: kyberSupportedNo },
+      ],
+      kyberNegotiatedYesNo: [
+        { name: "Yes", value: kyberNegotiatedYes },
+        { name: "No", value: kyberNegotiatedNo },
+      ],
+      certificateSignatureAlgorithms: buildChartData(certificateSignatureAlgorithms),
+      certificateKeySizes: buildChartData(certificateKeySizes),
+      tls13KeyExchange: buildChartData(tls13KeyExchange),
+      strongCipherCount,
+      weakCipherCount,
+      selfSignedCount,
+      tlsDowngradeVulnerable,
+      tier,
+      topRiskAssets,
     });
   } catch (error) {
     console.error("Overview fetch error:", error);

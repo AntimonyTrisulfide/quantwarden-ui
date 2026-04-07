@@ -68,6 +68,8 @@ function hasItemChanged(previous: ScanActivityItem | undefined, next: ScanActivi
 
   return (
     previous.status !== next.status ||
+    previous.portNumber !== next.portNumber ||
+    previous.portProtocol !== next.portProtocol ||
     previous.error !== next.error ||
     previous.completedAt !== next.completedAt
   );

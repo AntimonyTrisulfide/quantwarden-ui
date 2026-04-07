@@ -1,10 +1,13 @@
 import { prisma } from "@/lib/prisma";
-import { deriveOpenSSLScanSummary } from "@/lib/openssl-scan";
-import { refreshScanBatch } from "@/lib/scan-batch-server";
+import { getOpenSSLScanPort } from "@/lib/openssl-port-rollup";
+import { mergeAssetOpenPorts } from "@/lib/port-discovery";
+import { refreshOpenSSLAssetState, refreshScanBatch } from "@/lib/scan-batch-server";
 
 interface OpenSSLScanContext {
   value: string;
   type: string;
+  portNumber: number | null;
+  portProtocol: string | null;
 }
 
 export interface RunOpenSSLScanItemInput {
@@ -72,7 +75,7 @@ export function isOpenSSLRequestTimeoutError(error: unknown) {
 
 async function loadOpenSSLScanContext(input: RunOpenSSLScanItemInput): Promise<OpenSSLScanContext | null> {
   const rows = await prisma.$queryRawUnsafe<OpenSSLScanContext[]>(
-    `SELECT a.value, a.type
+    `SELECT a.value, a.type, s."portNumber", s."portProtocol"
      FROM "asset" a
      INNER JOIN "asset_scan" s ON s."assetId" = a.id
      INNER JOIN "asset_scan_batch" b ON b.id = s."batchId"
@@ -94,28 +97,18 @@ async function loadOpenSSLScanContext(input: RunOpenSSLScanItemInput): Promise<O
 async function markScanFailure(input: RunOpenSSLScanItemInput, failurePayload: string) {
   await prisma.$transaction(async (tx) => {
     const now = new Date();
-    const updatedScanRows = await tx.$queryRawUnsafe<{ assetId: string }[]>(
+    await tx.$queryRawUnsafe(
       `UPDATE "asset_scan"
        SET type = 'openssl', status = 'failed', "resultData" = $1, "completedAt" = $2
        WHERE id = $3
-         AND status IN ('pending', 'running')
-       RETURNING "assetId"`,
+         AND status IN ('pending', 'running')`,
       failurePayload,
       now,
       input.scanId
     );
-
-    if (updatedScanRows.length > 0) {
-      await tx.$executeRawUnsafe(
-        `UPDATE "asset"
-         SET "scanStatus" = 'failed', "lastScanDate" = $1
-         WHERE id = $2`,
-        now,
-        updatedScanRows[0].assetId
-      );
-    }
   });
 
+  await refreshOpenSSLAssetState(input.assetId, input.orgId);
   await refreshScanBatch(input.batchId);
 }
 
@@ -131,6 +124,7 @@ async function markScanDeferred(input: RunOpenSSLScanItemInput, reason: string) 
     );
   });
 
+  await refreshOpenSSLAssetState(input.assetId, input.orgId);
   await refreshScanBatch(input.batchId);
 }
 
@@ -157,6 +151,8 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
     };
   }
 
+  const targetPort = getOpenSSLScanPort(asset);
+
   try {
     const opensslUrl = process.env.OPENSSL_API_URL || "http://127.0.0.1:8020";
     const parsedTimeout = Number.parseInt(
@@ -182,7 +178,7 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         target: asset.value,
-        port: 443,
+        port: targetPort.number,
         timeout_seconds: timeoutSeconds,
         probe_batch_size: probeBatchSize,
         include_raw_debug: false,
@@ -197,13 +193,16 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
 
     try {
       parsed = JSON.parse(rawResult);
-    } catch {}
+    } catch {
+      parsed = null;
+    }
 
     if (!response.ok) {
       const infrastructureError = response.status >= 500;
-      const inferredError = typeof (parsed as any)?.error === "string"
-        ? (parsed as any).error
-        : (rawResult || `OpenSSL scan failed with status ${response.status}.`);
+      const inferredError =
+        typeof (parsed as any)?.error === "string"
+          ? (parsed as any).error
+          : rawResult || `OpenSSL scan failed with status ${response.status}.`;
 
       if (infrastructureError) {
         await markScanDeferred(input, `OpenSSL service unavailable (${response.status}). ${inferredError}`);
@@ -212,78 +211,55 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
         throw unavailableError;
       }
 
-      const failurePayload = typeof parsed === "object" && parsed !== null
-        ? JSON.stringify(parsed)
-        : JSON.stringify({ error: rawResult || "OpenSSL scan failed." });
+      const failurePayload =
+        typeof parsed === "object" && parsed !== null
+          ? JSON.stringify(parsed)
+          : JSON.stringify({ error: rawResult || "OpenSSL scan failed." });
 
       await markScanFailure(input, failurePayload);
       return {
         scanId: input.scanId,
         status: "failed",
         data: parsed,
-        error: typeof (parsed as any)?.error === "string" ? (parsed as any).error : "OpenSSL scan failed.",
+        error:
+          typeof (parsed as any)?.error === "string"
+            ? (parsed as any).error
+            : `OpenSSL scan failed on port ${targetPort.number}.`,
       };
     }
 
     await prisma.$transaction(async (tx) => {
       const now = new Date();
-      const updatedScanRows = await tx.$queryRawUnsafe<{ assetId: string }[]>(
+      await tx.$queryRawUnsafe(
         `UPDATE "asset_scan"
          SET type = 'openssl', status = 'completed', "resultData" = $1, "completedAt" = $2
          WHERE id = $3
-           AND status IN ('pending', 'running')
-         RETURNING "assetId"`,
+           AND status IN ('pending', 'running')`,
         rawResult,
         now,
         input.scanId
       );
 
-      if (updatedScanRows.length > 0) {
-        const resolvedIp =
-          parsed && typeof parsed === "object" && "resolved_ip" in (parsed as Record<string, unknown>)
-            ? ((parsed as Record<string, unknown>).resolved_ip as string | null | undefined) ?? null
-            : null;
-        await tx.$executeRawUnsafe(
-          `UPDATE "asset"
-           SET "scanStatus" = 'completed',
-               "lastScanDate" = $1,
-               "resolvedIp" = COALESCE($2, "resolvedIp"),
-               "openPorts" = COALESCE("openPorts", $3)
-           WHERE id = $4`,
-          now,
-          resolvedIp,
-          JSON.stringify([{ number: 443, protocol: "tcp" }]),
-          updatedScanRows[0].assetId
-        );
-      }
-    });
-
-    try {
       if (parsed && typeof parsed === "object") {
-        const summary = deriveOpenSSLScanSummary(parsed as any);
-        const assetStatus = summary.dnsMissing ? "expired" : "completed";
         const resolvedIp =
           "resolved_ip" in (parsed as Record<string, unknown>)
             ? ((parsed as Record<string, unknown>).resolved_ip as string | null | undefined) ?? null
             : null;
-        await prisma.$executeRawUnsafe(
+        const ensuredPorts = mergeAssetOpenPorts(null, [{ number: targetPort.number, protocol: "tcp" }]);
+
+        await tx.$executeRawUnsafe(
           `UPDATE "asset"
-           SET "scanStatus" = $1,
-               "lastScanDate" = $2,
-               "resolvedIp" = COALESCE($3, "resolvedIp"),
-               "openPorts" = COALESCE("openPorts", $4)
-           WHERE id = $5`,
-          assetStatus,
-          new Date(),
+           SET "resolvedIp" = $1,
+               "openPorts" = COALESCE("openPorts", $2)
+           WHERE id = $3`,
           resolvedIp,
-          JSON.stringify([{ number: 443, protocol: "tcp" }]),
+          JSON.stringify(ensuredPorts),
           input.assetId
         );
       }
-    } catch {
-      // Preserve the completed scan even if the post-processing summary fails.
-    }
+    });
 
+    await refreshOpenSSLAssetState(input.assetId, input.orgId);
     await refreshScanBatch(input.batchId);
 
     return {
@@ -296,7 +272,7 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
 
     if (errorKind === "request_timeout") {
       const failurePayload = JSON.stringify({
-        error: "OpenSSL request timeout. Possibly port not open or target not responding.",
+        error: `OpenSSL request timeout on port ${targetPort.number}. Possibly port not open or target not responding.`,
         timeout: true,
       });
 
@@ -305,7 +281,7 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
       return {
         scanId: input.scanId,
         status: "failed",
-        error: "OpenSSL request timeout. Possibly port not open or target not responding.",
+        error: `OpenSSL request timeout on port ${targetPort.number}. Possibly port not open or target not responding.`,
       };
     }
 
@@ -322,9 +298,10 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
     }
 
     const failurePayload = JSON.stringify({
-      error: error?.name === "AbortError"
-        ? "OpenSSL scan timed out before the target completed negotiation."
-        : error?.message || "Failed execution",
+      error:
+        error?.name === "AbortError"
+          ? `OpenSSL scan timed out before port ${targetPort.number} completed negotiation.`
+          : error?.message || `Failed execution on port ${targetPort.number}`,
     });
 
     await markScanFailure(input, failurePayload);
@@ -332,7 +309,7 @@ export async function runOpenSSLScanItem(input: RunOpenSSLScanItemInput): Promis
     return {
       scanId: input.scanId,
       status: "failed",
-      error: error?.message || "Failed execution",
+      error: error?.message || `Failed execution on port ${targetPort.number}`,
     };
   }
 }

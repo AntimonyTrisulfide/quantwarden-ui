@@ -2,6 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
+import { deriveOpenSSLAssetRollup } from "@/lib/openssl-port-rollup";
+
+interface AssetRow {
+  id: string;
+  value: string;
+  type: string;
+  isRoot: boolean;
+  parentId: string | null;
+  scanStatus: string | null;
+  lastScanDate: Date | null;
+  openPorts: string | null;
+}
+
+interface ScanRow {
+  id: string;
+  assetId: string;
+  type: string;
+  portNumber: number | null;
+  portProtocol: string | null;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  resultData: string | null;
+  createdAt: Date;
+  completedAt: Date | null;
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -17,7 +41,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Missing orgId" }, { status: 400 });
     }
 
-    // Verify member permissions
     const memberRows = await prisma.$queryRawUnsafe<{ id: string }[]>(
       `SELECT id FROM "member" WHERE "organizationId" = $1 AND "userId" = $2 LIMIT 1`,
       orgId,
@@ -28,37 +51,70 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Fetch all assets for the org, and efficiently bundle the latest SSL scan
-    const assets = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT 
-         a.id, a.value, a.type, a."isRoot", a."parentId", a."scanStatus", a."lastScanDate",
-         (
-           SELECT row_to_json(s)
-           FROM "asset_scan" s
-           WHERE s."assetId" = a.id
-             AND s.type = 'openssl'
-             AND s.status IN ('completed', 'failed')
-           ORDER BY
-             COALESCE(s."completedAt", s."createdAt") DESC,
-             s."createdAt" DESC
-           LIMIT 1
-         ) as "latestScan",
-         (
-           SELECT row_to_json(s)
-           FROM "asset_scan" s
-           WHERE s."assetId" = a.id
-             AND s.type = 'openssl'
-             AND s.status = 'completed'
-           ORDER BY
-             COALESCE(s."completedAt", s."createdAt") DESC,
-             s."createdAt" DESC
-           LIMIT 1
-         ) as "latestSuccessfulScan"
+    const assetRows = await prisma.$queryRawUnsafe<AssetRow[]>(
+      `SELECT
+         a.id,
+         a.value,
+         a.type,
+         a."isRoot",
+         a."parentId",
+         a."scanStatus",
+         a."lastScanDate",
+         a."openPorts"
        FROM "asset" a
        WHERE a."organizationId" = $1
        ORDER BY a.value ASC`,
       orgId
     );
+
+    const assetIds = assetRows.map((asset) => asset.id);
+    const scanRows = assetIds.length > 0
+      ? await prisma.$queryRawUnsafe<ScanRow[]>(
+          `SELECT
+             s.id,
+             s."assetId",
+             s.type,
+             s."portNumber" as "portNumber",
+             s."portProtocol" as "portProtocol",
+             s.status,
+             s."resultData",
+             s."createdAt",
+             s."completedAt"
+           FROM "asset_scan" s
+           WHERE s."assetId" = ANY($1::text[])
+             AND s.type = 'openssl'
+           ORDER BY
+             COALESCE(s."completedAt", s."createdAt") DESC,
+             s."createdAt" DESC`,
+          assetIds
+        )
+      : [];
+
+    const scansByAsset = new Map<string, ScanRow[]>();
+    for (const scan of scanRows) {
+      const existing = scansByAsset.get(scan.assetId) || [];
+      existing.push(scan);
+      scansByAsset.set(scan.assetId, existing);
+    }
+
+    const assets = assetRows.map((asset) => {
+      const rollup = deriveOpenSSLAssetRollup(scansByAsset.get(asset.id) || [], asset.openPorts);
+      return {
+        id: asset.id,
+        value: asset.value,
+        type: asset.type,
+        isRoot: asset.isRoot,
+        parentId: asset.parentId,
+        scanStatus: asset.scanStatus === "scanning" ? asset.scanStatus : rollup.scanStatus,
+        lastScanDate: rollup.lastScanDate || asset.lastScanDate,
+        latestScan: rollup.latestScan,
+        latestSuccessfulScan: rollup.latestSuccessfulScan,
+        primarySummaryScan: rollup.primarySummaryScan,
+        primaryPortKey: rollup.primaryPortKey,
+        currentTcpPorts: rollup.currentTcpPorts,
+        portTabs: rollup.portTabs,
+      };
+    });
 
     return NextResponse.json({ assets });
   } catch (error) {

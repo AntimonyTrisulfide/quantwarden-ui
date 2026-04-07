@@ -1,8 +1,7 @@
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { headers } from "next/headers";
 import AssetExplorerClient from "./_components/AssetExplorerClient";
+import { getSafeServerSession } from "@/lib/auth-session";
 
 export default async function AssetExplorePage({ 
   params,
@@ -14,7 +13,7 @@ export default async function AssetExplorePage({
   const resolvedParams = await params;
   const resolvedQuery = await searchParams;
   
-  const session = await auth.api.getSession({ headers: await headers() });
+  const session = await getSafeServerSession();
   if (!session?.user) redirect("/login");
 
   const orgRows = await prisma.$queryRawUnsafe<{ id: string, name: string, slug: string }[]>(
@@ -46,6 +45,8 @@ export default async function AssetExplorePage({
           initialCipher={resolvedQuery.cipher as string || ""}
           initialKeySize={resolvedQuery.keySize as string || ""}
           initialTls={resolvedQuery.tls as string || ""}
+          initialPqcSupported={resolvedQuery.pqcSupported as string || ""}
+          initialPqcNegotiated={resolvedQuery.pqcNegotiated as string || ""}
         />
       </div>
     </div>

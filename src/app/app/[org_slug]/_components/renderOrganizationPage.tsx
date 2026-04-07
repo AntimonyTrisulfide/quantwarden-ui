@@ -1,17 +1,14 @@
-import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import OnboardingFlow from "./OnboardingFlow";
 import OrgDashboard from "./OrgDashboard";
 import PendingRequestView from "./PendingRequestView";
 import type { DashboardSection } from "./dashboard-sections";
+import { getSafeServerSession } from "@/lib/auth-session";
 
 export async function renderOrganizationPage(orgSlug: string, activeSection: DashboardSection) {
-  const session = await auth.api.getSession({
-    headers: await headers()
-  });
+  const session = await getSafeServerSession();
 
   if (!session?.user) {
     redirect("/login");

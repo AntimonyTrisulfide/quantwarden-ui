@@ -1,15 +1,21 @@
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
 import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { prisma } from "@/lib/prisma";
-import { headers } from "next/headers";
 import AssetIntelligenceClient from "./_components/AssetIntelligenceClient";
+import { getSafeServerSession } from "@/lib/auth-session";
 
-export default async function AssetIntelligencePage({ params }: { params: Promise<{ org_slug: string; asset_id: string }> }) {
+export default async function AssetIntelligencePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ org_slug: string; asset_id: string }>;
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   // Await params for Next.js async params API
   const resolvedParams = await params;
+  const resolvedSearchParams = await searchParams;
   
-  const session = await auth.api.getSession({ headers: await headers() });
+  const session = await getSafeServerSession();
   if (!session?.user) redirect("/login");
 
   const orgRows = await prisma.$queryRawUnsafe<{ id: string, name: string, slug: string }[]>(
@@ -58,6 +64,7 @@ export default async function AssetIntelligencePage({ params }: { params: Promis
                org={org} 
                asset={asset} 
                initialScans={scanRows}
+               initialSelectedPortQuery={typeof resolvedSearchParams.port === "string" ? resolvedSearchParams.port : ""}
                canScan={access.canScan}
                canManageAssets={access.canManageAssets}
             />
