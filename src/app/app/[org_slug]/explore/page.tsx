@@ -3,6 +3,25 @@ import { prisma } from "@/lib/prisma";
 import AssetExplorerClient from "./_components/AssetExplorerClient";
 import { getSafeServerSession } from "@/lib/auth-session";
 
+function getFirstQueryValue(value: string | string[] | undefined) {
+  if (Array.isArray(value)) return value[0] || "";
+  return value || "";
+}
+
+function getCsvQueryValues(value: string | string[] | undefined) {
+  const rawValue = Array.isArray(value) ? value[0] || "" : value || "";
+  return rawValue
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function getPositiveIntegerQueryValue(value: string | string[] | undefined, fallback: number) {
+  const rawValue = Array.isArray(value) ? value[0] || "" : value || "";
+  const parsed = Number.parseInt(rawValue, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export default async function AssetExplorePage({ 
   params,
   searchParams
@@ -28,8 +47,6 @@ export default async function AssetExplorePage({
     session.user.id
   );
   if (memberRows.length === 0) redirect("/app");
-  const isAdmin = memberRows[0].role === "owner" || memberRows[0].role === "admin";
-
   return (
     <div className="relative isolate min-h-screen">
       <div
@@ -40,13 +57,25 @@ export default async function AssetExplorePage({
       <div className="relative z-10 min-h-screen overflow-y-auto">
         <AssetExplorerClient 
           org={org} 
-          isAdmin={isAdmin}
-          initialFilter={resolvedQuery.filter as string || ""}
-          initialCipher={resolvedQuery.cipher as string || ""}
-          initialKeySize={resolvedQuery.keySize as string || ""}
-          initialTls={resolvedQuery.tls as string || ""}
-          initialPqcSupported={resolvedQuery.pqcSupported as string || ""}
-          initialPqcNegotiated={resolvedQuery.pqcNegotiated as string || ""}
+          initialDnsState={getFirstQueryValue(resolvedQuery.dnsState)}
+          initialCertState={getFirstQueryValue(resolvedQuery.certState)}
+          initialTlsProfile={getFirstQueryValue(resolvedQuery.tlsProfile)}
+          initialTlsMatch={getFirstQueryValue(resolvedQuery.tlsMatch)}
+          initialSelfSigned={getFirstQueryValue(resolvedQuery.selfSigned)}
+          initialSignatureAlgorithm={getFirstQueryValue(resolvedQuery.signatureAlgorithm)}
+          initialPort={getFirstQueryValue(resolvedQuery.port)}
+          initialCertExpiry={getFirstQueryValue(resolvedQuery.certExpiry)}
+          initialTimeoutOnly={getFirstQueryValue(resolvedQuery.timeoutOnly)}
+          initialNoTls={getFirstQueryValue(resolvedQuery.noTls)}
+          initialCipher={getFirstQueryValue(resolvedQuery.cipher)}
+          initialKeySize={getFirstQueryValue(resolvedQuery.keySize)}
+          initialTls={getFirstQueryValue(resolvedQuery.tls)}
+          initialPqcSupported={getFirstQueryValue(resolvedQuery.pqcSupported)}
+          initialPqcNegotiated={getFirstQueryValue(resolvedQuery.pqcNegotiated)}
+          initialKexAlgorithms={getCsvQueryValues(resolvedQuery.kexAlgos)}
+          initialKexGroups={getCsvQueryValues(resolvedQuery.kexGroups)}
+          initialPage={getPositiveIntegerQueryValue(resolvedQuery.page, 1)}
+          initialPageSize={getPositiveIntegerQueryValue(resolvedQuery.pageSize, 25)}
         />
       </div>
     </div>

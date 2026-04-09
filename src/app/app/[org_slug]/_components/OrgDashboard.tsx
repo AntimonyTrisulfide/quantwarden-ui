@@ -6,8 +6,8 @@ import {
   Shield,
   Users,
   ArrowLeft,
-  Building2,
   User,
+  ScrollText,
 } from "lucide-react";
 import TeamManagement from "./TeamManagement";
 import AssetManagement from "./AssetManagement";
@@ -17,6 +17,7 @@ import RoleManagement from "./RoleManagement";
 import { Activity } from "lucide-react";
 import type { DashboardSection } from "./dashboard-sections";
 import ScanActivityMonitor from "./ScanActivityMonitor";
+import OrgCbom from "./OrgCbom";
 
 interface OrgDashboardProps {
   org: any;
@@ -31,6 +32,7 @@ interface OrgDashboardProps {
 
 const navItems = [
   { id: "overview", label: "Security Overview", icon: Activity },
+  { id: "cbom", label: "CERT-IN CBOM", icon: ScrollText },
   { id: "asset", label: "Asset Management", icon: Shield },
   { id: "scan", label: "Asset Scanning", icon: Shield },
   { id: "team", label: "Team Management", icon: Users },
@@ -57,27 +59,13 @@ export default function OrgDashboard({ org, currentUserRole, currentUserId, acti
 
       {/* Sidebar */}
       <aside className="absolute left-0 top-0 bottom-0 w-72 bg-[#8B0000] z-20 hidden lg:flex flex-col">
-        {/* Sidebar Header — Org Info */}
-        <div className="border-b border-white/10 px-5 py-5">
+        <div className="border-b border-white/10 px-5 py-4">
           <Link
             href="/app"
-            className="flex items-center gap-2 text-red-200 text-xs font-bold uppercase tracking-wider hover:text-white transition-colors mb-4"
+            className="flex items-center gap-2 text-red-200 text-xs font-bold uppercase tracking-wider hover:text-white transition-colors"
           >
             <ArrowLeft className="w-3.5 h-3.5" /> All Organizations
           </Link>
-          <div className="flex items-center gap-3">
-            {org.logo ? (
-              <img src={org.logo} alt={org.name} className="w-10 h-10 rounded-full object-cover shadow-md" />
-            ) : (
-              <div className="w-10 h-10 bg-white/15 rounded-xl flex items-center justify-center shrink-0">
-                <Building2 className="w-5 h-5 text-white" />
-              </div>
-            )}
-            <div className="overflow-hidden">
-              <p className="text-sm font-bold text-white truncate">{org.name}</p>
-              <p className="text-xs text-red-200 font-mono tracking-wider">{org.slug}</p>
-            </div>
-          </div>
         </div>
 
         {/* Nav Items */}
@@ -153,12 +141,17 @@ export default function OrgDashboard({ org, currentUserRole, currentUserId, acti
       </div>
 
       {/* Main Content Area */}
-      <main className="relative z-10 lg:ml-72 h-full overflow-y-auto lg:overflow-hidden flex flex-col">
-        <div className="max-w-[1100px] w-full mx-auto px-6 sm:px-8 py-6 flex-1 flex flex-col min-h-0">
+      <main className="relative z-10 lg:ml-72 h-full overflow-y-auto flex flex-col">
+        <div className="w-full min-h-full px-4 sm:px-5 lg:px-6 py-4 sm:py-5 flex flex-col">
           {activeSection === "overview" && (
             <OrgOverview
               org={org}
               isAdmin={isAdmin}
+            />
+          )}
+          {activeSection === "cbom" && (
+            <OrgCbom
+              org={org}
             />
           )}
           {activeSection === "team" && (

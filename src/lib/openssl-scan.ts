@@ -67,6 +67,12 @@ export interface OpenSSLCertificateSummary {
   san_dns?: string[];
 }
 
+export interface OpenSSLNamedIdentifier {
+  name: string;
+  oid?: string | null;
+  iana_code?: number | null;
+}
+
 export interface OpenSSLProfileResponse {
   target: string;
   port: number;
@@ -80,6 +86,10 @@ export interface OpenSSLProfileResponse {
   queried_groups?: string[];
   supported_groups?: string[];
   certificate: OpenSSLCertificateSummary;
+  identifiers?: {
+    certificate_algorithms?: OpenSSLNamedIdentifier[];
+    tls_groups?: OpenSSLNamedIdentifier[];
+  };
   metadata?: Record<string, unknown>;
 }
 

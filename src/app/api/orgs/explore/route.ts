@@ -5,6 +5,13 @@ import { headers } from "next/headers";
 import { parseOpenSSLScanResult } from "@/lib/openssl-scan";
 import { hasKyberGroup } from "@/lib/pqc";
 
+const TLS_VERSION_RANK: Record<string, number> = {
+  "TLSv1.3": 4,
+  "TLSv1.2": 3,
+  "TLSv1.1": 2,
+  "TLSv1.0": 1,
+};
+
 type AssetRow = {
   assetId: string;
   assetName: string;
@@ -34,8 +41,11 @@ type AssetScanSummary = {
   discoveredCiphers: string[];
   tls: string | null;
   keySize: string | null;
+  signatureAlgorithm: string | null;
   issue: string;
 };
+
+type TlsMatchMode = "" | "exact_latest";
 
 function formatEndpointLabel(row: Pick<AssetEndpointScanRow, "portNumber" | "portProtocol">) {
   const portNumber = row.portNumber ?? 443;
@@ -47,6 +57,19 @@ function formatEndpointQueryValue(row: Pick<AssetEndpointScanRow, "portNumber" |
   const portNumber = row.portNumber ?? 443;
   const portProtocol = (row.portProtocol || "tcp").toLowerCase();
   return `${portNumber}-${portProtocol}`;
+}
+
+function compareTlsVersions(left: string, right: string) {
+  const rankDelta = (TLS_VERSION_RANK[right] || 0) - (TLS_VERSION_RANK[left] || 0);
+  return rankDelta !== 0 ? rankDelta : left.localeCompare(right);
+}
+
+function getLatestSupportedTlsVersion(summary: NonNullable<ReturnType<typeof parseOpenSSLScanResult>["summary"]>) {
+  const discoveredTlsVersions = Array.from(
+    new Set([...(summary.supportedTlsVersions || []), ...(summary.primaryTlsVersion ? [summary.primaryTlsVersion] : [])])
+  );
+
+  return discoveredTlsVersions.sort(compareTlsVersions)[0] || null;
 }
 
 type ParsedScanEntry = {
@@ -70,6 +93,7 @@ function buildSummary(parsed: ReturnType<typeof parseOpenSSLScanResult>): AssetS
       discoveredCiphers: [],
       tls: null,
       keySize: null,
+      signatureAlgorithm: null,
       issue: "Scan Timeout",
     };
   }
@@ -93,6 +117,7 @@ function buildSummary(parsed: ReturnType<typeof parseOpenSSLScanResult>): AssetS
       derived.publicKeyAlgorithm && derived.publicKeyBits
         ? `${derived.publicKeyAlgorithm} ${derived.publicKeyBits}-bit`
         : null,
+    signatureAlgorithm: derived.signatureAlgorithm,
     issue: isDnsMissing
       ? "DNS Expired"
       : isNoTls
@@ -108,54 +133,108 @@ function buildSummary(parsed: ReturnType<typeof parseOpenSSLScanResult>): AssetS
 }
 
 function scanMatchesFilters(
-  parsed: ReturnType<typeof parseOpenSSLScanResult>,
+  entry: Pick<ParsedScanEntry, "row" | "parsed">,
   filters: {
     dnsStateVal: string;
-    timeoutOnlyVal: string;
+    certStateVal: string;
+    tlsProfileVal: string;
+    tlsMatchMode: TlsMatchMode;
+    selfSignedVal: string;
+    signatureAlgorithmVal: string;
+    timeoutOnlyVal: "" | "true" | "false";
+    noTlsFilter: "" | "true" | "false";
     selectedKexAlgos: string[];
     selectedKexGroups: string[];
-    pqcSupportedOnly: boolean;
-    pqcNegotiatedOnly: boolean;
+    pqcSupportedFilter: "" | "true" | "false";
+    pqcNegotiatedFilter: "" | "true" | "false";
     cipherVal: string;
     keySizeVal: string;
     tlsVal: string;
+    endpointPortVal: string;
+    certExpiryVal: string;
   }
 ) {
+  const parsed = entry.parsed;
   const {
     dnsStateVal,
+    certStateVal,
+    tlsProfileVal,
+    tlsMatchMode,
+    selfSignedVal,
+    signatureAlgorithmVal,
     timeoutOnlyVal,
+    noTlsFilter,
     selectedKexAlgos,
     selectedKexGroups,
-    pqcSupportedOnly,
-    pqcNegotiatedOnly,
+    pqcSupportedFilter,
+    pqcNegotiatedFilter,
     cipherVal,
     keySizeVal,
     tlsVal,
+    endpointPortVal,
+    certExpiryVal,
   } = filters;
 
   const summary = parsed.summary;
   const hasTimedOut = Boolean(parsed.error && /timed out/i.test(parsed.error));
+  const hasNoTls = Boolean(summary?.noTlsDetected);
 
   if (timeoutOnlyVal === "true" && !hasTimedOut) {
+    return false;
+  }
+  if (timeoutOnlyVal === "false" && hasTimedOut) {
+    return false;
+  }
+  if (noTlsFilter === "true" && !hasNoTls) {
+    return false;
+  }
+  if (noTlsFilter === "false" && hasNoTls) {
     return false;
   }
 
   if (!summary) {
     const hasScanSpecificFilters =
       Boolean(dnsStateVal) ||
+      Boolean(certStateVal) ||
+      Boolean(tlsProfileVal) ||
+      Boolean(selfSignedVal) ||
+      Boolean(signatureAlgorithmVal) ||
       Boolean(cipherVal) ||
       Boolean(keySizeVal) ||
       Boolean(tlsVal) ||
+      Boolean(endpointPortVal) ||
+      Boolean(certExpiryVal) ||
+      Boolean(noTlsFilter) ||
       selectedKexAlgos.length > 0 ||
       selectedKexGroups.length > 0 ||
-      pqcSupportedOnly ||
-      pqcNegotiatedOnly;
+      Boolean(pqcSupportedFilter) ||
+      Boolean(pqcNegotiatedFilter);
 
     return !hasScanSpecificFilters && hasTimedOut;
   }
 
   if (dnsStateVal === "found" && summary.dnsMissing) return false;
   if (dnsStateVal === "not_found" && !summary.dnsMissing) return false;
+
+  const isExpiredOrInvalid =
+    summary.certificateValid === false ||
+    (typeof summary.daysRemaining === "number" && summary.daysRemaining <= 0);
+  const isExpiringSoon =
+    typeof summary.daysRemaining === "number" &&
+    summary.daysRemaining > 0 &&
+    summary.daysRemaining <= 30;
+  if (certStateVal === "expired_or_invalid" && !isExpiredOrInvalid) return false;
+  if (certStateVal === "expiring_soon" && !isExpiringSoon) return false;
+  if (selfSignedVal === "true" && summary.selfSignedCert !== true) return false;
+  if (signatureAlgorithmVal && summary.signatureAlgorithm !== signatureAlgorithmVal) return false;
+
+  const supportedTlsVersions = new Set<string>([
+    ...(summary.supportedTlsVersions || []),
+    ...(summary.primaryTlsVersion ? [summary.primaryTlsVersion] : []),
+  ]);
+  const hasTls13 = supportedTlsVersions.has("TLSv1.3");
+  const isLegacyOrMissing = hasNoTls || (!summary.dnsMissing && supportedTlsVersions.size > 0 && !hasTls13);
+  if (tlsProfileVal === "legacy_or_missing" && !isLegacyOrMissing) return false;
 
   if (selectedKexAlgos.length > 0) {
     const rowAlgos = new Set(summary.keyExchangeAlgorithms || []);
@@ -167,8 +246,13 @@ function scanMatchesFilters(
     if (!selectedKexGroups.some((group) => rowGroups.has(group))) return false;
   }
 
-  if (pqcSupportedOnly && !hasKyberGroup(summary.supportedGroups)) return false;
-  if (pqcNegotiatedOnly && !hasKyberGroup([summary.negotiatedGroup])) return false;
+  const hasSupportedKyber = hasKyberGroup(summary.supportedGroups);
+  const hasNegotiatedKyber = hasKyberGroup([summary.negotiatedGroup]);
+
+  if (pqcSupportedFilter === "true" && !hasSupportedKyber) return false;
+  if (pqcSupportedFilter === "false" && hasSupportedKyber) return false;
+  if (pqcNegotiatedFilter === "true" && !hasNegotiatedKyber) return false;
+  if (pqcNegotiatedFilter === "false" && hasNegotiatedKyber) return false;
 
   if (cipherVal) {
     const discoveredCipherSuites = new Set<string>([
@@ -187,12 +271,44 @@ function scanMatchesFilters(
     if (actualKey !== keySizeVal) return false;
   }
 
+  if (endpointPortVal) {
+    const actualPort = String(entry.row.portNumber ?? 443);
+    if (actualPort !== endpointPortVal) return false;
+  }
+
   if (tlsVal) {
     const discoveredTlsVersions = new Set<string>([
       ...(summary.supportedTlsVersions || []),
       ...(summary.primaryTlsVersion ? [summary.primaryTlsVersion] : []),
     ]);
-    if (!discoveredTlsVersions.has(tlsVal)) return false;
+    const latestObservedTlsVersion = getLatestSupportedTlsVersion(summary);
+    const selectedTlsRank = TLS_VERSION_RANK[tlsVal] || 0;
+    const latestObservedTlsRank = Math.max(
+      0,
+      ...Array.from(discoveredTlsVersions).map((version) => TLS_VERSION_RANK[version] || 0)
+    );
+
+    if (selectedTlsRank === 0 || latestObservedTlsRank === 0) {
+      return false;
+    }
+
+    if (tlsMatchMode === "exact_latest") {
+      if (latestObservedTlsVersion !== tlsVal) return false;
+    } else if (latestObservedTlsRank > selectedTlsRank) {
+      return false;
+    }
+  }
+
+  if (certExpiryVal) {
+    const daysRemaining = summary.daysRemaining;
+    if (typeof daysRemaining !== "number") {
+      return false;
+    }
+
+    if (certExpiryVal === "expired" && daysRemaining > 0) return false;
+    if (certExpiryVal === "in_30_days" && !(daysRemaining > 0 && daysRemaining <= 30)) return false;
+    if (certExpiryVal === "in_90_days" && !(daysRemaining > 30 && daysRemaining <= 90)) return false;
+    if (certExpiryVal === "over_90_days" && !(daysRemaining > 90)) return false;
   }
 
   return true;
@@ -217,7 +333,24 @@ export async function GET(req: NextRequest) {
     }
 
     const dnsStateVal = searchParams.get("dnsState") || "";
-    const timeoutOnlyVal = searchParams.get("timeoutOnly") || "";
+    const certStateVal = searchParams.get("certState") || "";
+    const tlsProfileVal = searchParams.get("tlsProfile") || "";
+    const tlsMatchMode: TlsMatchMode =
+      searchParams.get("tlsMatch") === "exact_latest" ? "exact_latest" : "";
+    const selfSignedVal = searchParams.get("selfSigned") === "true" ? "true" : "";
+    const signatureAlgorithmVal = searchParams.get("signatureAlgorithm") || "";
+    const timeoutOnlyVal =
+      searchParams.get("timeoutOnly") === "true"
+        ? "true"
+        : searchParams.get("timeoutOnly") === "false"
+          ? "false"
+          : "";
+    const noTlsFilter =
+      searchParams.get("noTls") === "true"
+        ? "true"
+        : searchParams.get("noTls") === "false"
+          ? "false"
+          : "";
     const selectedKexAlgos = (searchParams.get("kexAlgos") || "")
       .split(",")
       .map((value) => value.trim())
@@ -226,23 +359,47 @@ export async function GET(req: NextRequest) {
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean);
-    const pqcSupportedOnly = searchParams.get("pqcSupported") === "true";
-    const pqcNegotiatedOnly = searchParams.get("pqcNegotiated") === "true";
+    const pqcSupportedFilter =
+      searchParams.get("pqcSupported") === "true"
+        ? "true"
+        : searchParams.get("pqcSupported") === "false"
+          ? "false"
+          : "";
+    const pqcNegotiatedFilter =
+      searchParams.get("pqcNegotiated") === "true"
+        ? "true"
+        : searchParams.get("pqcNegotiated") === "false"
+          ? "false"
+          : "";
     const cipherVal = searchParams.get("cipher") || "";
     const keySizeVal = searchParams.get("keySize") || "";
     const tlsVal = searchParams.get("tls") || "";
+    const endpointPortVal = searchParams.get("port") || "";
+    const certExpiryVal = searchParams.get("certExpiry") || "";
     const searchVal = (searchParams.get("search") || "").toLowerCase();
+    const shouldPaginate = searchParams.get("paginate") !== "false";
+    const requestedPage = Number.parseInt(searchParams.get("page") || "1", 10);
+    const requestedPageSize = Number.parseInt(searchParams.get("pageSize") || "25", 10);
+    const pageSize = [10, 25, 50, 100].includes(requestedPageSize) ? requestedPageSize : 25;
 
-    const filters = {
+    const filters: Parameters<typeof scanMatchesFilters>[1] = {
       dnsStateVal,
+      certStateVal,
+      tlsProfileVal,
+      tlsMatchMode,
+      selfSignedVal,
+      signatureAlgorithmVal,
       timeoutOnlyVal,
+      noTlsFilter,
       selectedKexAlgos,
       selectedKexGroups,
-      pqcSupportedOnly,
-      pqcNegotiatedOnly,
+      pqcSupportedFilter,
+      pqcNegotiatedFilter,
       cipherVal,
       keySizeVal,
       tlsVal,
+      endpointPortVal,
+      certExpiryVal,
     };
 
     const assetRows = await prisma.$queryRawUnsafe<AssetRow[]>(
@@ -292,8 +449,10 @@ export async function GET(req: NextRequest) {
     const cipherOptions = new Set<string>();
     const keySizeOptions = new Set<string>();
     const tlsOptions = new Set<string>();
+    const portOptions = new Set<string>();
     const kexAlgorithmOptions = new Set<string>();
     const negotiatedGroupOptions = new Set<string>();
+    const signatureAlgorithmOptions = new Set<string>();
 
     for (const row of endpointScanRows) {
       const parsed = parseOpenSSLScanResult(row.resultData);
@@ -306,6 +465,8 @@ export async function GET(req: NextRequest) {
       const current = scansByAssetId.get(row.assetId) || [];
       current.push(entry);
       scansByAssetId.set(row.assetId, current);
+
+      portOptions.add(String(row.portNumber ?? 443));
 
       if (!parsed.summary) continue;
 
@@ -320,6 +481,9 @@ export async function GET(req: NextRequest) {
       }
       if (parsed.summary.publicKeyAlgorithm && parsed.summary.publicKeyBits) {
         keySizeOptions.add(`${parsed.summary.publicKeyAlgorithm} ${parsed.summary.publicKeyBits}-bit`);
+      }
+      if (parsed.summary.signatureAlgorithm) {
+        signatureAlgorithmOptions.add(parsed.summary.signatureAlgorithm);
       }
       for (const algorithm of parsed.summary.keyExchangeAlgorithms || []) {
         if (algorithm) kexAlgorithmOptions.add(algorithm);
@@ -358,14 +522,20 @@ export async function GET(req: NextRequest) {
 
     const hasScanFilters =
       Boolean(dnsStateVal) ||
+      Boolean(certStateVal) ||
+      Boolean(tlsProfileVal) ||
+      Boolean(selfSignedVal) ||
+      Boolean(signatureAlgorithmVal) ||
       timeoutOnlyVal === "true" ||
       Boolean(cipherVal) ||
       Boolean(keySizeVal) ||
       Boolean(tlsVal) ||
+      Boolean(endpointPortVal) ||
+      Boolean(certExpiryVal) ||
       selectedKexAlgos.length > 0 ||
       selectedKexGroups.length > 0 ||
-      pqcSupportedOnly ||
-      pqcNegotiatedOnly;
+      Boolean(pqcSupportedFilter) ||
+      Boolean(pqcNegotiatedFilter);
 
     for (const asset of assetRows) {
       if (searchVal && !asset.assetName.toLowerCase().includes(searchVal)) {
@@ -374,7 +544,7 @@ export async function GET(req: NextRequest) {
 
       const assetScans = scansByAssetId.get(asset.assetId) || [];
       const matchingEntries = hasScanFilters
-        ? assetScans.filter((entry) => scanMatchesFilters(entry.parsed, filters))
+        ? assetScans.filter((entry) => scanMatchesFilters(entry, filters))
         : assetScans.slice(0, 1);
 
       let chosenEntry: ParsedScanEntry | null = null;
@@ -422,9 +592,20 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    const totalMatch = filtered.length;
+    const totalPages = shouldPaginate ? Math.max(1, Math.ceil(totalMatch / pageSize)) : 1;
+    const currentPage = shouldPaginate ? Math.min(Math.max(requestedPage || 1, 1), totalPages) : 1;
+    const startIndex = shouldPaginate ? (currentPage - 1) * pageSize : 0;
+    const paginatedAssets = shouldPaginate
+      ? filtered.slice(startIndex, startIndex + pageSize)
+      : filtered;
+
     return NextResponse.json({
-      assets: filtered.slice(0, 500),
-      totalMatch: filtered.length,
+      assets: paginatedAssets,
+      totalMatch,
+      currentPage,
+      pageSize: shouldPaginate ? pageSize : totalMatch,
+      totalPages,
       matchingEndpointCount: filtered.reduce(
         (sum, asset) => sum + Math.max(asset.matchingEndpointCount, 0),
         0
@@ -433,9 +614,11 @@ export async function GET(req: NextRequest) {
       filterOptions: {
         ciphers: [...cipherOptions].sort(),
         keySizes: [...keySizeOptions].sort(),
-        tlsVersions: [...tlsOptions].sort(),
+        tlsVersions: [...tlsOptions].sort(compareTlsVersions),
+        ports: [...portOptions].sort((left, right) => Number(left) - Number(right)),
         kexAlgorithms: [...kexAlgorithmOptions].sort(),
         kexGroups: [...negotiatedGroupOptions].sort(),
+        signatureAlgorithms: [...signatureAlgorithmOptions].sort(),
       },
     });
   } catch (error) {

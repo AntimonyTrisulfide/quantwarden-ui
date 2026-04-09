@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSession, signOut } from "@/lib/auth-client";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
@@ -17,10 +17,23 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 
+type ExplorerOrgNavItem = {
+  id: string;
+  name: string;
+  slug: string;
+};
+
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const { data: sessionData, isPending } = useSession();
+  const [workspaceOrg, setWorkspaceOrg] = useState<ExplorerOrgNavItem | null>(null);
+
+  const workspaceOrgSlug = useMemo(() => {
+    if (!pathname) return null;
+    const match = pathname.match(/^\/app\/([^/]+)(?:\/.*)?$/);
+    return match?.[1] ?? null;
+  }, [pathname]);
 
   // Redirect to login if not authenticated
   if (!isPending && !sessionData?.session) {
@@ -46,6 +59,40 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       }
     });
   };
+
+  useEffect(() => {
+    if (!workspaceOrgSlug || !sessionData?.session) {
+      setWorkspaceOrg(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadWorkspaceOrg = async () => {
+      try {
+        const res = await fetch("/api/orgs/list");
+        if (!res.ok) return;
+
+        const json = await res.json();
+        const organizations = Array.isArray(json.organizations) ? json.organizations : [];
+        const matchingOrg = organizations.find((org: ExplorerOrgNavItem) => org.slug === workspaceOrgSlug) || null;
+
+        if (!cancelled) {
+          setWorkspaceOrg(matchingOrg);
+        }
+      } catch {
+        if (!cancelled) {
+          setWorkspaceOrg(null);
+        }
+      }
+    };
+
+    loadWorkspaceOrg();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceOrgSlug, sessionData?.session]);
 
   return (
     <ScanActivityProvider>
@@ -78,6 +125,24 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="max-w-360 mx-auto px-6 sm:px-8 h-16 flex items-center justify-between">
             {/* Left: Logo */}
             <Link href="/app" className="flex items-center gap-2.5 group">
+              {workspaceOrg ? (
+                <>
+                  <Link
+                    href={`/app/${workspaceOrg.slug}`}
+                    className="hidden lg:flex items-center gap-2 rounded-full border border-[#8B0000]/35 bg-[#8B0000] px-3.5 py-1.5 shadow-sm shadow-[#8B0000]/20 transition hover:bg-[#730000]"
+                  >
+                    <div className="min-w-0">
+                      <p className="max-w-[200px] truncate text-sm font-bold leading-tight text-white">
+                        {workspaceOrg.name}
+                      </p>
+                      <p className="max-w-[200px] truncate text-[11px] font-semibold leading-tight text-white/80">
+                        {workspaceOrg.slug}
+                      </p>
+                    </div>
+                  </Link>
+                  <span className="hidden lg:inline text-lg font-black text-[#8B0000]/85">@</span>
+                </>
+              ) : null}
               <div className="w-9 h-9 bg-[#8B0000] rounded-lg flex items-center justify-center shadow-md shadow-[#8B0000]/20 group-hover:shadow-lg group-hover:shadow-[#8B0000]/30 transition-all">
                 <Shield className="w-5 h-5 text-white" />
               </div>
