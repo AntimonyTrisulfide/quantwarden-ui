@@ -25,8 +25,16 @@ import {
   Telescope,
   CheckCircle2,
   TriangleAlert,
+  Tags,
 } from "lucide-react";
 import { useScanActivity } from "@/components/scan-activity-provider";
+import {
+  buildAssetBucketOptions,
+  DEFAULT_ASSET_BUCKET,
+  inferAssetBucket,
+  normalizeAssetBucket,
+  PREDEFINED_ASSET_BUCKETS,
+} from "@/lib/asset-buckets";
 import {
   Select,
   SelectContent,
@@ -95,6 +103,34 @@ interface PortDiscoveryModalScope {
   mode: "full" | "single";
   assetIds: string[];
   assetLabel?: string | null;
+}
+
+interface ManagedRootAsset {
+  id: string;
+  value: string;
+  type: "domain" | "ip" | "unknown";
+  bucket: string;
+  addedAt: string;
+  scanning: boolean;
+  statusMessage?: string;
+  scanStatus?: string;
+  portDiscoveryStatus?: string;
+  resolvedIp?: string | null;
+  openPorts: AssetPort[];
+  subdomains: string[];
+}
+
+interface ManagedLeafAsset {
+  id: string;
+  value: string;
+  type: "domain" | "ip" | "unknown";
+  bucket: string;
+  parentId: string | null;
+  addedAt: string;
+  scanStatus?: string;
+  portDiscoveryStatus?: string;
+  resolvedIp?: string | null;
+  openPorts: AssetPort[];
 }
 
 // ═══════════════════════════════════════
@@ -272,6 +308,15 @@ function RenderResolvedIpChip({
   );
 }
 
+function AssetBucketChip({ bucket }: { bucket: string }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#8B0000]/8 px-2 py-0.5 text-[10px] font-bold text-[#8B0000]">
+      <Tags className="h-3 w-3" />
+      {bucket}
+    </span>
+  );
+}
+
 function toPortDiscoveryDrafts(entries: PortDiscoveryPresetEntry[]): PortDiscoveryEntryDraft[] {
   return entries.map((entry) => ({
     id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${entry.port}-${entry.title}`,
@@ -302,15 +347,12 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
   });
 
   // === Root assets ===
-  const [rootAssets, setRootAssets] = useState<{
-    id: string; value: string; type: "domain" | "ip" | "unknown";
-    addedAt: string; scanning: boolean; statusMessage?: string; scanStatus?: string; portDiscoveryStatus?: string; resolvedIp?: string | null; openPorts: AssetPort[];
-    subdomains: string[];
-  }[]>(() => {
+  const [rootAssets, setRootAssets] = useState<ManagedRootAsset[]>(() => {
     return orgAssets.filter(a => a.isRoot).map(a => ({
       id: a.id,
       value: a.value,
       type: getAssetType(a.value),
+      bucket: normalizeAssetBucket(a.bucket || inferAssetBucket(a.value)),
       addedAt: new Date(a.createdAt).toISOString(),
       scanning: a.scanStatus === 'scanning',
       scanStatus: a.scanStatus,
@@ -323,14 +365,12 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
   });
 
   // === Leaf assets ===
-  const [leafAssets, setLeafAssets] = useState<{
-    id: string; value: string; type: "domain" | "ip" | "unknown";
-    parentId: string | null; addedAt: string; scanStatus?: string; portDiscoveryStatus?: string; resolvedIp?: string | null; openPorts: AssetPort[];
-  }[]>(() => {
+  const [leafAssets, setLeafAssets] = useState<ManagedLeafAsset[]>(() => {
     return orgAssets.filter(a => !a.isRoot).map(a => ({
       id: a.id,
       value: a.value,
       type: getAssetType(a.value),
+      bucket: normalizeAssetBucket(a.bucket || inferAssetBucket(a.value)),
       parentId: a.parentId,
       addedAt: new Date(a.createdAt).toISOString(),
       scanStatus: a.scanStatus,
@@ -353,7 +393,7 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
   const [isSavingEditedPorts, setIsSavingEditedPorts] = useState(false);
   const [discoveredAssetsModal, setDiscoveredAssetsModal] = useState<{
     sourceValue: string;
-    assets: Array<{ id: string; value: string; type: "domain" | "ip" | "unknown"; openPorts: AssetPort[] }>;
+    assets: Array<{ id: string; value: string; type: "domain" | "ip" | "unknown"; bucket: string; openPorts: AssetPort[] }>;
   } | null>(null);
   const [portsPreviewAsset, setPortsPreviewAsset] = useState<{
     value: string;
@@ -376,6 +416,17 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
   // === Search / View ===
   const [rootSearch, setRootSearch] = useState("");
   const [leafSearch, setLeafSearch] = useState("");
+  const [bucketFilter, setBucketFilter] = useState("all");
+  const [bucketView, setBucketView] = useState<"flat" | "grouped">("flat");
+  const [newBucketName, setNewBucketName] = useState("");
+  const [editingBucketAsset, setEditingBucketAsset] = useState<{
+    id: string;
+    value: string;
+    assetKind: "root" | "leaf";
+    bucket: string;
+  } | null>(null);
+  const [bucketDraft, setBucketDraft] = useState("");
+  const [isSavingBucket, setIsSavingBucket] = useState(false);
   const [rootOpen, setRootOpen] = useState(true);
   const [leafOpen, setLeafOpen] = useState(true);
   const hasDuplicatePortEntries = (() => {
@@ -464,10 +515,22 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
   const portDiscoveryScopeLabel = portDiscoveryModal?.mode === "single"
     ? portDiscoveryModal.assetLabel || "Selected asset"
     : `${portDiscoveryModal?.assetIds.length || 0} assets`;
+  const allManagedAssets = [...rootAssets, ...leafAssets];
+  const bucketOptions = buildAssetBucketOptions(allManagedAssets);
+  const visibleBucketOptions = bucketOptions.filter((bucket) =>
+    allManagedAssets.some((asset) => asset.bucket === bucket)
+  );
+  const selectedAddBucketLabel = bucketDraft === "__auto" ? "Auto bucket" : normalizeAssetBucket(bucketDraft);
+  const resolveAddBucket = (value: string) => {
+    if (newBucketName.trim()) return normalizeAssetBucket(newBucketName);
+    return bucketDraft === "__auto" ? inferAssetBucket(value) : normalizeAssetBucket(bucketDraft);
+  };
 
   const resetAssetModalState = () => {
     setRootInput("");
     setLeafInput("");
+    setBucketDraft("__auto");
+    setNewBucketName("");
     const defaultPorts = createDefaultAssetPorts();
     setAssetPorts(defaultPorts);
     setAssetPortDrafts(defaultPorts.map((port) => String(port.number)));
@@ -508,6 +571,7 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
             portDiscoveryStatus: fresh.portDiscoveryStatus,
             resolvedIp: fresh.resolvedIp ?? null,
             openPorts: parseOpenPorts(fresh.openPorts),
+            bucket: normalizeAssetBucket(fresh.bucket || inferAssetBucket(fresh.value)),
             statusMessage: asset.scanning && fresh.scanStatus !== "scanning" ? "" : asset.statusMessage,
             subdomains: Array.from(
               new Set([
@@ -530,6 +594,7 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
                 portDiscoveryStatus: fresh.portDiscoveryStatus,
                 resolvedIp: fresh.resolvedIp ?? null,
                 openPorts: parseOpenPorts(fresh.openPorts),
+                bucket: normalizeAssetBucket(fresh.bucket || inferAssetBucket(fresh.value)),
               }
             : asset;
         });
@@ -546,6 +611,7 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
             portDiscoveryStatus: asset.portDiscoveryStatus,
             resolvedIp: asset.resolvedIp ?? null,
             openPorts: parseOpenPorts(asset.openPorts),
+            bucket: normalizeAssetBucket(asset.bucket || inferAssetBucket(asset.value)),
           }));
 
         return newLeafs.length > 0 ? [...updatedLeafs, ...newLeafs] : updatedLeafs;
@@ -752,12 +818,14 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
       if (type === "unknown") return; // invalid input
       if (rootAssets.some((a) => a.value === val)) return; // duplicate
       if (newAssets.some((a) => a.value === val)) return; // duplicate in this batch
+      const bucket = resolveAddBucket(val);
       
       const assetId = `root-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       newAssets.push({
         id: assetId,
         value: val,
         type,
+        bucket,
         addedAt: new Date().toISOString(),
         scanning: false,
         scanStatus: "idle",
@@ -771,10 +839,10 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
       fetch(`/api/orgs/assets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: org.id, value: val, type, isRoot: true, openPorts: assetPorts })
+        body: JSON.stringify({ orgId: org.id, value: val, type, isRoot: true, openPorts: assetPorts, bucket })
       }).then(res => res.json()).then(data => {
          if(data.asset) {
-            setRootAssets(prev => prev.map(a => a.id === assetId ? { ...a, id: data.asset.id } : a));
+            setRootAssets(prev => prev.map(a => a.id === assetId ? { ...a, id: data.asset.id, bucket: data.asset.bucket || bucket } : a));
          }
       }).catch(console.error);
     });
@@ -798,12 +866,14 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
       if (type === "unknown") return;
       if (leafAssets.some((a) => a.value === val)) return;
       if (newAssets.some((a) => a.value === val)) return;
+      const bucket = resolveAddBucket(val);
       
       const assetId = `leaf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       newAssets.push({
         id: assetId,
         value: val,
         type,
+        bucket,
         parentId: null,
         addedAt: new Date().toISOString(),
         scanStatus: "idle",
@@ -816,10 +886,10 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
       fetch(`/api/orgs/assets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orgId: org.id, value: val, type, isRoot: false, parentId: null, openPorts: assetPorts })
+        body: JSON.stringify({ orgId: org.id, value: val, type, isRoot: false, parentId: null, openPorts: assetPorts, bucket })
       }).then(res => res.json()).then(data => {
          if(data.asset) {
-            setLeafAssets(prev => prev.map(a => a.id === assetId ? { ...a, id: data.asset.id } : a));
+            setLeafAssets(prev => prev.map(a => a.id === assetId ? { ...a, id: data.asset.id, bucket: data.asset.bucket || bucket } : a));
          }
       }).catch(console.error);
     });
@@ -1042,6 +1112,85 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
     }
   };
 
+  const openEditBucketModal = (asset: { id: string; value: string; bucket: string }, assetKind: "root" | "leaf") => {
+    setEditingBucketAsset({
+      id: asset.id,
+      value: asset.value,
+      bucket: normalizeAssetBucket(asset.bucket),
+      assetKind,
+    });
+    setBucketDraft(normalizeAssetBucket(asset.bucket));
+    setNewBucketName("");
+  };
+
+  const closeEditBucketModal = () => {
+    setEditingBucketAsset(null);
+    setBucketDraft("__auto");
+    setNewBucketName("");
+    setIsSavingBucket(false);
+  };
+
+  const resolveBucketDraft = () => {
+    if (newBucketName.trim()) return normalizeAssetBucket(newBucketName);
+    if (bucketDraft === "__auto" && editingBucketAsset) return inferAssetBucket(editingBucketAsset.value);
+    if (bucketDraft === "__auto") return DEFAULT_ASSET_BUCKET;
+    return normalizeAssetBucket(bucketDraft);
+  };
+
+  const saveEditedBucket = async () => {
+    if (!editingBucketAsset || isSavingBucket) return;
+
+    const nextBucket = resolveBucketDraft();
+    const targetAsset = editingBucketAsset;
+    const previousRootAssets = rootAssets;
+    const previousLeafAssets = leafAssets;
+    const previousDiscoveredAssetsModal = discoveredAssetsModal;
+
+    if (targetAsset.assetKind === "root") {
+      setRootAssets((current) => current.map((asset) => (asset.id === targetAsset.id ? { ...asset, bucket: nextBucket } : asset)));
+    } else {
+      setLeafAssets((current) => current.map((asset) => (asset.id === targetAsset.id ? { ...asset, bucket: nextBucket } : asset)));
+    }
+    setDiscoveredAssetsModal((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        assets: current.assets.map((asset) =>
+          asset.id === targetAsset.id ? { ...asset, bucket: nextBucket } : asset
+        ),
+      };
+    });
+
+    setIsSavingBucket(true);
+
+    try {
+      const response = await fetch(`/api/orgs/assets`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgId: org.id, id: targetAsset.id, bucket: nextBucket }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.error || "Failed to save bucket.");
+      }
+
+      toast.success("Bucket saved.", {
+        description: `${targetAsset.value} moved to ${nextBucket}.`,
+        position: "bottom-right",
+      });
+      closeEditBucketModal();
+    } catch (error) {
+      setRootAssets(previousRootAssets);
+      setLeafAssets(previousLeafAssets);
+      setDiscoveredAssetsModal(previousDiscoveredAssetsModal);
+      toast.error("Could not save bucket.", {
+        description: error instanceof Error ? error.message : "Something went wrong while saving the bucket.",
+      });
+      setIsSavingBucket(false);
+    }
+  };
+
   const handleRemoveRoot = (id: string) => {
     setRootAssets(rootAssets.filter((a) => a.id !== id));
     setLeafAssets(leafAssets.filter((a) => a.parentId !== id));
@@ -1079,14 +1228,14 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
 
   const openDiscoveredAssetsModal = (
     sourceValue: string,
-    assets: Array<{ id: string; value: string; type: "domain" | "ip" | "unknown"; openPorts: AssetPort[] }>
+    assets: Array<{ id: string; value: string; type: "domain" | "ip" | "unknown"; bucket: string; openPorts: AssetPort[] }>
   ) => {
     setDiscoveredAssetsModal({ sourceValue, assets });
   };
 
   const showDiscoveryCompletionToast = (
     sourceValue: string,
-    discoveredAssets: Array<{ id: string; value: string; type: "domain" | "ip" | "unknown"; openPorts: AssetPort[] }>
+    discoveredAssets: Array<{ id: string; value: string; type: "domain" | "ip" | "unknown"; bucket: string; openPorts: AssetPort[] }>
   ) => {
     const discoveredCount = discoveredAssets.length;
     toast.custom(
@@ -1168,11 +1317,19 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
             id: subAsset.id,
             value: subAsset.value,
             type: getAssetType(subAsset.value),
+            bucket: normalizeAssetBucket(subAsset.bucket || inferAssetBucket(subAsset.value)),
             openPorts: parseOpenPorts(subAsset.openPorts),
           }));
           setLeafAssets(prev => {
              const existing = new Set(prev.map(p => p.value));
-             const newLeafs = data.subdomains.filter((s:any) => !existing.has(s.value));
+             const newLeafs = data.subdomains
+               .filter((s:any) => !existing.has(s.value))
+               .map((s: any) => ({
+                 ...s,
+                 type: getAssetType(s.value),
+                 bucket: normalizeAssetBucket(s.bucket || inferAssetBucket(s.value)),
+                 openPorts: parseOpenPorts(s.openPorts),
+               }));
              return [...prev, ...newLeafs];
           });
           setRootAssets(prev => prev.map(a => a.id === id ? { 
@@ -1249,10 +1406,14 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
 
   // === Filtered lists ===
   const filteredRoot = rootAssets.filter((a) =>
-    a.value.toLowerCase().includes(rootSearch.toLowerCase())
+    (bucketFilter === "all" || a.bucket === bucketFilter) &&
+    (a.value.toLowerCase().includes(rootSearch.toLowerCase()) ||
+      a.bucket.toLowerCase().includes(rootSearch.toLowerCase()))
   );
   const filteredLeaf = leafAssets.filter((a) =>
-    a.value.toLowerCase().includes(leafSearch.toLowerCase())
+    (bucketFilter === "all" || a.bucket === bucketFilter) &&
+    (a.value.toLowerCase().includes(leafSearch.toLowerCase()) ||
+      a.bucket.toLowerCase().includes(leafSearch.toLowerCase()))
   );
   const discoverableRootDomains = rootAssets.filter(
     (asset) => asset.type === "domain" && !asset.scanning && !discoverQueue.includes(asset.id)
@@ -1322,6 +1483,7 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
               <p className={`truncate text-sm font-semibold ${isDnsExpired ? "text-red-600" : "text-[#3d200a]"}`}>{asset.value}</p>
+              <AssetBucketChip bucket={asset.bucket} />
               <RenderResolvedIpChip value={asset.value} type={asset.type} resolvedIp={asset.resolvedIp} />
               {isDnsExpired && (
                 <ActionTooltip content="The domain was not found in DNS.">
@@ -1359,6 +1521,17 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
               <Telescope className="h-3.5 w-3.5" />
             </Link>
           </ActionTooltip>
+          {canManageAssets && (
+            <ActionTooltip content="Edit bucket">
+              <button
+                type="button"
+                onClick={() => openEditBucketModal(asset, "root")}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[#8B0000]/15 bg-white text-[#8B0000] opacity-0 transition-all hover:bg-[#8B0000]/8 group-hover:opacity-100 focus-visible:opacity-100"
+              >
+                <Tags className="h-3.5 w-3.5" />
+              </button>
+            </ActionTooltip>
+          )}
           {canManageAssets && (
             <ActionTooltip content="Edit ports">
               <button
@@ -1432,6 +1605,7 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
               <p className={`truncate text-sm font-semibold ${isDnsExpired ? "text-red-600" : "text-[#3d200a]"}`}>{asset.value}</p>
+              <AssetBucketChip bucket={asset.bucket} />
               <RenderResolvedIpChip value={asset.value} type={asset.type} resolvedIp={asset.resolvedIp} />
               {isDnsExpired && (
                 <ActionTooltip content="The domain was not found in DNS.">
@@ -1459,6 +1633,17 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
               <Telescope className="h-3.5 w-3.5" />
             </Link>
           </ActionTooltip>
+          {canManageAssets && (
+            <ActionTooltip content="Edit bucket">
+              <button
+                type="button"
+                onClick={() => openEditBucketModal(asset, "leaf")}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[#8B0000]/15 bg-white text-[#8B0000] opacity-0 transition-all hover:bg-[#8B0000]/8 group-hover:opacity-100 focus-visible:opacity-100"
+              >
+                <Tags className="h-3.5 w-3.5" />
+              </button>
+            </ActionTooltip>
+          )}
           {canManageAssets && (
             <ActionTooltip content="Edit ports">
               <button
@@ -1504,6 +1689,33 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
     );
   };
 
+  const renderGroupedAssets = <Asset extends { id: string; bucket: string }>(
+    assets: Asset[],
+    renderAssetRow: (asset: Asset) => React.ReactNode
+  ) => {
+    const grouped = assets.reduce<Record<string, Asset[]>>((groups, asset) => {
+      const bucket = normalizeAssetBucket(asset.bucket);
+      groups[bucket] = groups[bucket] || [];
+      groups[bucket].push(asset);
+      return groups;
+    }, {});
+
+    return Object.entries(grouped)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([bucket, bucketAssets]) => (
+        <div key={bucket} className="mb-4 overflow-hidden rounded-xl border border-amber-500/15 bg-white/70">
+          <div className="flex items-center justify-between border-b border-amber-500/10 bg-[#fff7ea] px-4 py-2">
+            <span className="inline-flex items-center gap-2 text-xs font-extrabold text-[#3d200a]">
+              <Tags className="h-3.5 w-3.5 text-[#8B0000]" />
+              {bucket}
+            </span>
+            <span className="text-[10px] font-bold text-[#8a5d33]/70">{bucketAssets.length} assets</span>
+          </div>
+          <div>{bucketAssets.map(renderAssetRow)}</div>
+        </div>
+      ));
+  };
+
   return (
     <TooltipProvider>
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[2rem] border border-amber-300/40 bg-white/80 shadow-sm backdrop-blur-sm">
@@ -1536,6 +1748,25 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
               <CountBadge count={rootAssets.length + leafAssets.length} />
             </div>
             <div className="flex items-center gap-2">
+              <Select value={bucketFilter} onValueChange={setBucketFilter}>
+                <SelectTrigger className="h-10 min-w-[168px] rounded-full border border-amber-500/20 bg-white px-4 text-xs font-bold shadow-sm">
+                  <SelectValue placeholder="All buckets" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Buckets</SelectItem>
+                  {visibleBucketOptions.map((bucket) => (
+                    <SelectItem key={bucket} value={bucket}>{bucket}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <button
+                type="button"
+                onClick={() => setBucketView((current) => (current === "flat" ? "grouped" : "flat"))}
+                className="inline-flex h-10 items-center gap-2 rounded-full border border-amber-300/50 bg-white px-4 text-xs font-bold text-[#8B0000] shadow-sm transition-colors hover:bg-amber-50"
+              >
+                <Tags className="h-3.5 w-3.5" />
+                {bucketView === "flat" ? "Group Buckets" : "Flat List"}
+              </button>
               {canManageAssets && (
                 <ActionTooltip content="Add asset">
                   <button
@@ -1655,7 +1886,9 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
                       sub="Add domains or IP addresses to start mapping your attack surface."
                     />
                   ) : (
-                    filteredRoot.map(renderRootAssetRow)
+                    bucketView === "grouped"
+                      ? renderGroupedAssets(filteredRoot, renderRootAssetRow)
+                      : filteredRoot.map(renderRootAssetRow)
                   )}
                 </div>
               </div>
@@ -1709,7 +1942,9 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
                       sub="Scan root domains for subdomains or add them manually."
                     />
                   ) : (
-                    filteredLeaf.map(renderLeafAssetRow)
+                    bucketView === "grouped"
+                      ? renderGroupedAssets(filteredLeaf, renderLeafAssetRow)
+                      : filteredLeaf.map(renderLeafAssetRow)
                   )}
                 </div>
               </div>
@@ -1773,6 +2008,51 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
               }
               showSubmitButton={false}
             />
+            <div className="px-4 pb-2">
+              <div className="rounded-[1.25rem] border border-amber-500/15 bg-white/75 px-4 py-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <label className="min-w-0 flex-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#8a5d33]/70">
+                      Bucket
+                    </span>
+                    <Select value={bucketDraft} onValueChange={(value) => {
+                      setBucketDraft(value);
+                      setNewBucketName("");
+                    }}>
+                      <SelectTrigger className="mt-2 h-10 rounded-full border border-amber-500/20 bg-white px-4 text-sm font-bold shadow-none">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__auto">Auto bucket from URL</SelectItem>
+                        {PREDEFINED_ASSET_BUCKETS.map((bucket) => (
+                          <SelectItem key={bucket} value={bucket}>{bucket}</SelectItem>
+                        ))}
+                        {bucketOptions
+                          .filter((bucket) => !PREDEFINED_ASSET_BUCKETS.includes(bucket as any))
+                          .map((bucket) => (
+                            <SelectItem key={bucket} value={bucket}>{bucket}</SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="min-w-0 flex-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#8a5d33]/70">
+                      Custom Bucket
+                    </span>
+                    <input
+                      type="text"
+                      value={newBucketName}
+                      onChange={(e) => setNewBucketName(e.target.value)}
+                      placeholder="e.g. YONO, UAT, CBS"
+                      className="mt-2 h-10 w-full rounded-full border border-amber-500/20 bg-white px-4 text-sm font-semibold text-[#3d200a] outline-none transition-all placeholder:text-[#8a5d33]/35 focus:ring-2 focus:ring-[#8B0000]/25"
+                    />
+                  </label>
+                </div>
+                <p className="mt-2 text-xs font-semibold text-[#8a5d33]/70">
+                  Selected: {newBucketName.trim() ? normalizeAssetBucket(newBucketName) : selectedAddBucketLabel}
+                </p>
+              </div>
+            </div>
             <div className="px-4 pb-2">
               <div className="rounded-[1.5rem] border border-amber-500/15 bg-white/75 px-4 py-4">
                 <div className="mb-3 flex items-center justify-between gap-3">
@@ -2160,6 +2440,90 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
         </div>
       </div>
     ), document.body)}
+    {canManageAssets && editingBucketAsset && typeof document !== "undefined" && ReactDOM.createPortal((
+      <div
+        className="fixed inset-0 z-[130] flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm"
+        onClick={closeEditBucketModal}
+      >
+        <div
+          className="w-full max-w-lg rounded-2xl border border-amber-300/40 bg-[#fffaf3] shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="border-b border-amber-500/10 px-5 py-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-extrabold text-[#3d200a]">Edit Bucket</h3>
+                <p className="mt-1 break-all text-sm text-[#8a5d33]">{editingBucketAsset.value}</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeEditBucketModal}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-amber-300/40 bg-white text-[#8a5d33] transition-colors hover:bg-amber-50 hover:text-[#3d200a]"
+                aria-label="Close edit bucket modal"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-4 px-5 py-5">
+            <label className="block">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#8a5d33]/70">
+                Bucket
+              </span>
+              <Select value={bucketDraft} onValueChange={(value) => {
+                setBucketDraft(value);
+                setNewBucketName("");
+              }}>
+                <SelectTrigger className="mt-2 h-11 rounded-full border border-amber-500/20 bg-white px-4 text-sm font-bold shadow-none">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__auto">Auto bucket from URL</SelectItem>
+                  {bucketOptions.map((bucket) => (
+                    <SelectItem key={bucket} value={bucket}>{bucket}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </label>
+
+            <label className="block">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#8a5d33]/70">
+                New Bucket
+              </span>
+              <input
+                type="text"
+                value={newBucketName}
+                onChange={(e) => setNewBucketName(e.target.value)}
+                placeholder="Create a bucket like Mobile Banking"
+                className="mt-2 h-11 w-full rounded-full border border-amber-500/20 bg-white px-4 text-sm font-semibold text-[#3d200a] outline-none transition-all placeholder:text-[#8a5d33]/35 focus:ring-2 focus:ring-[#8B0000]/25"
+              />
+            </label>
+
+            <div className="rounded-xl border border-[#8B0000]/10 bg-white px-4 py-3">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[#8a5d33]/65">Will be moved to</p>
+              <p className="mt-1 text-sm font-extrabold text-[#3d200a]">{resolveBucketDraft()}</p>
+            </div>
+
+            <button
+              type="button"
+              onClick={saveEditedBucket}
+              disabled={isSavingBucket}
+              className="inline-flex h-11 w-full items-center justify-center rounded-full bg-[#8B0000] text-sm font-bold text-white transition-colors hover:bg-[#730000] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {isSavingBucket ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving Bucket...
+                </>
+              ) : (
+                "Save Bucket"
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    ), document.body)}
     {canManageAssets && editingPortsAsset && typeof document !== "undefined" && ReactDOM.createPortal((
       <div
         className="fixed inset-0 z-[130] flex items-center justify-center bg-black/35 p-4 backdrop-blur-sm"
@@ -2399,20 +2763,34 @@ export default function AssetManagement({ org, currentUserRole, currentUserId, c
                         </div>
                         <div className="min-w-0">
                           <p className="truncate text-[15px] font-semibold leading-6 text-[#3d200a]">{asset.value}</p>
-                          <div className="mt-1">{renderPortChips(asset.openPorts)}</div>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <AssetBucketChip bucket={asset.bucket} />
+                            {renderPortChips(asset.openPorts)}
+                          </div>
                         </div>
                       </div>
-                      <ActionTooltip content="Edit ports">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            openEditPortsModal(asset, "leaf");
-                          }}
-                          className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-neutral-300 bg-white text-neutral-600 transition-all hover:bg-neutral-50 hover:text-neutral-800"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
-                      </ActionTooltip>
+                      <div className="flex items-center gap-2">
+                        <ActionTooltip content="Edit bucket">
+                          <button
+                            type="button"
+                            onClick={() => openEditBucketModal(asset, "leaf")}
+                            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-neutral-300 bg-white text-[#8B0000] transition-all hover:bg-neutral-50"
+                          >
+                            <Tags className="h-4 w-4" />
+                          </button>
+                        </ActionTooltip>
+                        <ActionTooltip content="Edit ports">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              openEditPortsModal(asset, "leaf");
+                            }}
+                            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-neutral-300 bg-white text-neutral-600 transition-all hover:bg-neutral-50 hover:text-neutral-800"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </button>
+                        </ActionTooltip>
+                      </div>
                     </div>
                   );
                 })

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { inferAssetBucket } from "@/lib/asset-buckets";
 import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { prisma } from "@/lib/prisma";
 import { headers } from "next/headers";
@@ -127,9 +128,10 @@ export async function GET(req: NextRequest) {
         for (const sub of uniqueSubdomains) {
           try {
             const leafId = crypto.randomUUID();
+            const bucket = inferAssetBucket(sub);
             await prisma.$executeRawUnsafe(
-              `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "openPorts", "createdAt", "parentId")
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+              `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "openPorts", bucket, "createdAt", "parentId")
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
               leafId,
               sub,
               getAssetType(sub),
@@ -137,14 +139,36 @@ export async function GET(req: NextRequest) {
               orgId,
               false,
               JSON.stringify([{ number: 443, protocol: "tcp" }]),
+              bucket,
               new Date(),
               assetId
-            );
+            ).catch(async (dbError: any) => {
+              const missingBucketColumn =
+                typeof dbError?.message === "string" &&
+                dbError.message.includes(`column "bucket" of relation "asset" does not exist`);
+
+              if (!missingBucketColumn) throw dbError;
+
+              await prisma.$executeRawUnsafe(
+                `INSERT INTO "asset" (id, value, type, "isRoot", "organizationId", verified, "openPorts", "createdAt", "parentId")
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                leafId,
+                sub,
+                getAssetType(sub),
+                false,
+                orgId,
+                false,
+                JSON.stringify([{ number: 443, protocol: "tcp" }]),
+                new Date(),
+                assetId
+              );
+            });
             newAssets.push({
               id: leafId,
               value: sub,
               type: getAssetType(sub),
               parentId: assetId,
+              bucket,
               addedAt: new Date().toISOString(),
               resolvedIp: null,
               openPorts: JSON.stringify([{ number: 443, protocol: "tcp" }]),

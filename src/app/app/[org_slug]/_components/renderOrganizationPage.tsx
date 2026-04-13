@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { inferAssetBucket, normalizeAssetBucket } from "@/lib/asset-buckets";
 import { getOrgMemberAccess } from "@/lib/org-scan-permissions";
 import { redirect } from "next/navigation";
 import OnboardingFlow from "./OnboardingFlow";
@@ -79,18 +80,28 @@ export async function renderOrganizationPage(orgSlug: string, activeSection: Das
 
   let assetsRows: any[] = [];
   try {
-    assetsRows = await prisma.$queryRawUnsafe<{ id: string, value: string, type: string, isRoot: boolean, parentId: string | null, verified: boolean, resolvedIp: string | null, openPorts: string | null, createdAt: Date, scanStatus: string, lastScanDate: Date | null, portDiscoveryStatus: string, lastPortDiscoveryDate: Date | null }[]>(
-      `SELECT id, value, type, "isRoot", "parentId", verified, "resolvedIp", "openPorts", "createdAt", "scanStatus", "lastScanDate", "portDiscoveryStatus", "lastPortDiscoveryDate" FROM "asset" WHERE "organizationId" = $1`,
+    assetsRows = await prisma.$queryRawUnsafe<{ id: string, value: string, type: string, isRoot: boolean, parentId: string | null, verified: boolean, resolvedIp: string | null, openPorts: string | null, bucket: string | null, createdAt: Date, scanStatus: string, lastScanDate: Date | null, portDiscoveryStatus: string, lastPortDiscoveryDate: Date | null }[]>(
+      `SELECT id, value, type, "isRoot", "parentId", verified, "resolvedIp", "openPorts", bucket, "createdAt", "scanStatus", "lastScanDate", "portDiscoveryStatus", "lastPortDiscoveryDate" FROM "asset" WHERE "organizationId" = $1`,
       org.id
     );
   } catch (err) {
-    assetsRows = await prisma.$queryRawUnsafe<{ id: string, value: string, type: string, isRoot: boolean, parentId: string | null, verified: boolean, createdAt: Date }[]>(
-      `SELECT id, value, type, "isRoot", "parentId", verified, "createdAt" FROM "asset" WHERE "organizationId" = $1`,
-      org.id
-    );
+    try {
+      assetsRows = await prisma.$queryRawUnsafe<{ id: string, value: string, type: string, isRoot: boolean, parentId: string | null, verified: boolean, resolvedIp: string | null, openPorts: string | null, createdAt: Date, scanStatus: string, lastScanDate: Date | null, portDiscoveryStatus: string, lastPortDiscoveryDate: Date | null }[]>(
+        `SELECT id, value, type, "isRoot", "parentId", verified, "resolvedIp", "openPorts", "createdAt", "scanStatus", "lastScanDate", "portDiscoveryStatus", "lastPortDiscoveryDate" FROM "asset" WHERE "organizationId" = $1`,
+        org.id
+      );
+    } catch {
+      assetsRows = await prisma.$queryRawUnsafe<{ id: string, value: string, type: string, isRoot: boolean, parentId: string | null, verified: boolean, createdAt: Date }[]>(
+        `SELECT id, value, type, "isRoot", "parentId", verified, "createdAt" FROM "asset" WHERE "organizationId" = $1`,
+        org.id
+      );
+    }
   }
 
-  org.assets = assetsRows;
+  org.assets = assetsRows.map((asset) => ({
+    ...asset,
+    bucket: normalizeAssetBucket(asset.bucket || inferAssetBucket(asset.value)),
+  }));
   org.domains = assetsRows.filter((a) => a.isRoot && a.type === "domain").map((a) => a.value);
 
   const rolesRows = await prisma.$queryRawUnsafe<{ id: string, name: string, permissions: string }[]>(
